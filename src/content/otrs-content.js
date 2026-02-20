@@ -141,7 +141,50 @@
     };
   }
 
-  // Слушаем запросы от background/sidepanel
+  // === Вставка шаблона в редактор ответа ===
+  function insertTemplate(text) {
+    // 1) CKEditor API (OTRS часто использует CKEditor)
+    if (typeof CKEDITOR !== 'undefined') {
+      const editors = Object.values(CKEDITOR.instances || {});
+      if (editors.length > 0) {
+        const html = text.replace(/\n/g, '<br>');
+        editors[0].insertHtml(html);
+        return { ok: true };
+      }
+    }
+
+    // 2) WYSIWYG iframe
+    const editorIframe = document.querySelector(
+      '#cke_1_contents iframe, .cke_wysiwyg_frame, ' +
+      '#RichText iframe, .RichTextEditor iframe'
+    );
+    if (editorIframe) {
+      try {
+        const editorDoc = editorIframe.contentDocument || editorIframe.contentWindow.document;
+        const body = editorDoc.querySelector('body');
+        if (body) {
+          const html = text.replace(/\n/g, '<br>');
+          body.innerHTML = html + body.innerHTML;
+          return { ok: true };
+        }
+      } catch (_) { /* cross-origin */ }
+    }
+
+    // 3) Textarea fallback
+    const textarea = document.querySelector(
+      '#RichText, textarea[name="Body"], textarea[name="RichText"], #Body'
+    );
+    if (textarea) {
+      textarea.value = text + '\n' + textarea.value;
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      textarea.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true };
+    }
+
+    return { ok: false, error: 'Редактор ответа не найден на странице' };
+  }
+
+  // Слушаем запросы от background/UI
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.type === 'PARSE_OTRS') {
       try {
@@ -167,6 +210,16 @@
       try {
         moveToQueue(msg.queue);
         sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+      return true;
+    }
+
+    if (msg.type === 'INSERT_TEMPLATE') {
+      try {
+        const result = insertTemplate(msg.text);
+        sendResponse(result);
       } catch (err) {
         sendResponse({ ok: false, error: err.message });
       }

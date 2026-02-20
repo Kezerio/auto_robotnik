@@ -1,12 +1,11 @@
 {
   "manifest_version": 3,
   "name": "__MSG_appName__",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "__MSG_appDescription__",
   "default_locale": "ru",
 
   "permissions": [
-    "sidePanel",
     "activeTab",
     "scripting",
     "storage",
@@ -24,10 +23,6 @@
   "background": {
     "service_worker": "src/background/service-worker.js",
     "type": "module"
-  },
-
-  "side_panel": {
-    "default_path": "src/sidepanel/sidepanel.html"
   },
 
   "content_scripts": [
@@ -70,7 +65,16 @@
   ],
 
   "action": {
-    "default_title": "Auto Robotnik"
+    "default_title": "Auto Robotnik — открыть консоль"
+  },
+
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+R"
+      },
+      "description": "Показать/Скрыть консоль Auto Robotnik"
+    }
   },
 
   "icons": {
