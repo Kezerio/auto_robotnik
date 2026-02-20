@@ -1,0 +1,8 @@
+{
+  "appName": {
+    "message": "Auto Robotnik — OTRS Helper"
+  },
+  "appDescription": {
+    "message": "Ускорение обработки типовых тикетов OTRS и связанных систем"
+  }
+}
