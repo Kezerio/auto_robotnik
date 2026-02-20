@@ -1,0 +1,81 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_appName__",
+  "version": "0.1.0",
+  "description": "__MSG_appDescription__",
+  "default_locale": "ru",
+
+  "permissions": [
+    "sidePanel",
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+
+  "host_permissions": [
+    "http://otrs.tlpn/*",
+    "http://intra10.office.tlpn/*",
+    "https://ringmeadmin.tlpn/*",
+    "https://apiproxy.telphin.ru/*",
+    "https://teleo.telphin.ru/*"
+  ],
+
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+
+  "side_panel": {
+    "default_path": "src/sidepanel/sidepanel.html"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["http://otrs.tlpn/*"],
+      "js": ["src/content/otrs-content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://intra10.office.tlpn/admin/*"],
+      "js": ["src/content/accounting-content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://intra10.office.tlpn/support/*"],
+      "js": ["src/content/support-script-content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://ringmeadmin.tlpn/*"],
+      "js": ["src/content/ringme-content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://teleo.telphin.ru/*"],
+      "js": ["src/content/teleo-content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://otrs.tlpn/*",
+        "http://intra10.office.tlpn/*",
+        "https://ringmeadmin.tlpn/*",
+        "https://apiproxy.telphin.ru/*",
+        "https://teleo.telphin.ru/*"
+      ],
+      "js": ["src/content/recorder-content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_title": "Auto Robotnik"
+  },
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Auto Robotnik</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <header class="header">
+    <h1 class="header__title">Auto Robotnik</h1>
+    <div class="header__mode">
+      <label class="toggle">
+        <input type="checkbox" id="modeToggle">
+        <span class="toggle__slider"></span>
+        <span class="toggle__label" id="modeLabel">Assist</span>
+      </label>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="ticket">Тикет</button>
+    <button class="tab" data-tab="playbook">Сценарии</button>
+    <button class="tab" data-tab="recorder">Запись</button>
+    <button class="tab" data-tab="knowledge">База знаний</button>
+    <button class="tab" data-tab="logs">Логи</button>
+  </nav>
+
+  <!-- ===== Вкладка: Тикет ===== -->
+  <section class="panel" id="panel-ticket">
+    <div class="card">
+      <h2 class="card__title">Карточка тикета</h2>
+      <div class="card__row">
+        <span class="card__label">Ticket ID:</span>
+        <span class="card__value" id="val-ticketId">—</span>
+        <button class="btn-copy" data-copy="val-ticketId" title="Копировать">📋</button>
+      </div>
+      <div class="card__row">
+        <span class="card__label">Код клиента:</span>
+        <span class="card__value" id="val-clientCode">—</span>
+        <button class="btn-copy" data-copy="val-clientCode" title="Копировать">📋</button>
+      </div>
+      <div class="card__row">
+        <span class="card__label">Номер линии:</span>
+        <span class="card__value" id="val-lineNumber">—</span>
+        <button class="btn-copy" data-copy="val-lineNumber" title="Копировать">📋</button>
+      </div>
+      <div class="card__row">
+        <span class="card__label">Тариф АТС:</span>
+        <span class="card__value" id="val-atcPlan">—</span>
+      </div>
+      <div class="card__row">
+        <span class="card__label">Услуги:</span>
+        <div class="card__value card__value--list" id="val-services">—</div>
+      </div>
+      <div class="card__actions">
+        <button class="btn btn--primary" id="btn-refreshData">Обновить данные</button>
+        <button class="btn" id="btn-confirmCorrect">Верно</button>
+        <button class="btn btn--warn" id="btn-confirmWrong">Неверно (исправить)</button>
+      </div>
+    </div>
+
+    <div class="card" id="correction-panel" style="display:none">
+      <h3 class="card__title">Исправление данных</h3>
+      <label class="field">
+        <span>Код клиента:</span>
+        <input type="text" id="fix-clientCode">
+      </label>
+      <label class="field">
+        <span>Номер линии:</span>
+        <input type="text" id="fix-lineNumber">
+      </label>
+      <label class="field">
+        <span>Тариф АТС:</span>
+        <select id="fix-atcPlan">
+          <option value="">Не определён</option>
+          <option value="Start">Start</option>
+          <option value="Business">Business</option>
+        </select>
+      </label>
+      <button class="btn btn--primary" id="btn-applyFix">Применить</button>
+    </div>
+
+    <div class="card">
+      <h3 class="card__title">Быстрые ссылки</h3>
+      <div class="quick-links" id="quickLinks">
+        <!-- заполняется динамически -->
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Вкладка: Сценарии ===== -->
+  <section class="panel hidden" id="panel-playbook">
+    <div class="card">
+      <h2 class="card__title">Выберите сценарий</h2>
+      <div id="scenarioList" class="scenario-list"></div>
+    </div>
+
+    <div class="card hidden" id="playbookRunner">
+      <h3 class="card__title" id="playbookRunnerTitle">—</h3>
+      <div id="playbookSteps" class="steps-list"></div>
+      <div class="card__actions">
+        <button class="btn btn--primary" id="btn-nextStep">Следующий шаг</button>
+        <button class="btn btn--warn" id="btn-stopPlaybook">Остановить</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Вкладка: Запись ===== -->
+  <section class="panel hidden" id="panel-recorder">
+    <div class="card">
+      <h2 class="card__title">Запись сценария</h2>
+      <p class="card__desc">Включите запись, выполните действия на странице. Расширение запомнит каждый клик и ввод.</p>
+      <div class="card__actions">
+        <button class="btn btn--primary" id="btn-startRecord">Начать запись</button>
+        <button class="btn btn--warn" id="btn-stopRecord" disabled>Остановить запись</button>
+      </div>
+      <div id="recordedStepsList" class="steps-list"></div>
+      <div class="card__actions" id="recordActions" style="display:none">
+        <label class="field">
+          <span>Название сценария:</span>
+          <input type="text" id="recordName" placeholder="Мой сценарий">
+        </label>
+        <button class="btn btn--primary" id="btn-saveRecording">Сохранить как Playbook</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 class="card__title">Импорт / Экспорт</h3>
+      <div class="card__actions">
+        <button class="btn" id="btn-exportPlaybooks">Экспорт Playbooks (JSON)</button>
+        <button class="btn" id="btn-importPlaybooks">Импорт Playbooks (JSON)</button>
+        <input type="file" id="file-importPlaybooks" accept=".json" style="display:none">
+      </div>
+      <div class="card__actions">
+        <button class="btn" id="btn-exportTraining">Экспорт обучающих примеров</button>
+        <button class="btn" id="btn-importTraining">Импорт обучающих примеров</button>
+        <input type="file" id="file-importTraining" accept=".json" style="display:none">
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Вкладка: База знаний ===== -->
+  <section class="panel hidden" id="panel-knowledge">
+    <div class="card">
+      <h2 class="card__title">База знаний</h2>
+      <div class="field">
+        <input type="text" id="kb-search" placeholder="Поиск по базе знаний...">
+      </div>
+      <div id="kb-list" class="kb-list"></div>
+    </div>
+    <div class="card">
+      <h3 class="card__title">Добавить заметку</h3>
+      <label class="field">
+        <span>Заголовок:</span>
+        <input type="text" id="kb-title">
+      </label>
+      <label class="field">
+        <span>Текст:</span>
+        <textarea id="kb-text" rows="5"></textarea>
+      </label>
+      <label class="field">
+        <span>Теги (через запятую):</span>
+        <input type="text" id="kb-tags" placeholder="атс, teleo, маршрутизация">
+      </label>
+      <button class="btn btn--primary" id="btn-addKb">Добавить</button>
+    </div>
+    <div class="card">
+      <h3 class="card__title">Импорт / Экспорт</h3>
+      <div class="card__actions">
+        <button class="btn" id="btn-exportKb">Экспорт (JSON)</button>
+        <button class="btn" id="btn-importKb">Импорт (JSON)</button>
+        <input type="file" id="file-importKb" accept=".json" style="display:none">
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Вкладка: Логи ===== -->
+  <section class="panel hidden" id="panel-logs">
+    <div class="card">
+      <h2 class="card__title">Журнал действий</h2>
+      <div class="card__actions">
+        <button class="btn" id="btn-refreshLogs">Обновить</button>
+        <button class="btn" id="btn-exportLogs">Экспорт</button>
+        <button class="btn btn--warn" id="btn-clearLogs">Очистить</button>
+      </div>
+      <div id="logsList" class="logs-list"></div>
+    </div>
+  </section>
+
+  <div class="toast hidden" id="toast"></div>
+
+  <script src="sidepanel.js" type="module"></script>
+</body>
+</html>
