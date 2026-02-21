@@ -6,10 +6,10 @@
 
 import { addLog, getLogs, clearLogs, exportLogs } from '../storage/logger.js';
 import { addTrainingExample, exportTrainingExamples, importTrainingExamples } from '../storage/training-store.js';
-import { savePlaybook, getPlaybooks, exportPlaybooks, importPlaybooks } from '../storage/playbook-store.js';
+import { savePlaybook, getPlaybooks, deletePlaybook, exportPlaybooks, importPlaybooks } from '../storage/playbook-store.js';
 import { addKnowledgeEntry, getKnowledgeEntries, deleteKnowledgeEntry, searchKnowledge, exportKnowledge, importKnowledge } from '../storage/knowledge-store.js';
 import {
-  addTemplate, getTemplates, deleteTemplate, searchTemplates,
+  addTemplate, getTemplates, deleteTemplate, updateTemplate, searchTemplates,
   resolveTemplatePlaceholders, recordTemplateUsage, getRecommendedTemplates,
   exportTemplates, importTemplates
 } from '../storage/template-store.js';
@@ -24,6 +24,8 @@ let isRecording = false;
 let recordedSteps = [];
 let isPinned = false;
 let boundTabId = null; // null = авто-режим, число = привязка к вкладке
+let debugMode = false;
+let editingTemplateId = null; // для редактирования шаблона
 
 // === DOM refs ===
 const $ = (sel) => document.querySelector(sel);
@@ -42,6 +44,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initKnowledgePanel();
   initLogsPanel();
   initCopyButtons();
+  initDebugModeHotkey();
   await restoreState();
   requestInitialData();
   listenForUpdates();
@@ -124,9 +127,10 @@ function updateContextBarState(state, text) {
 }
 
 function updateContextBarData(data) {
-  $('#ctxTicketId').textContent = data?.ticketId ? `#${data.ticketId}` : '';
+  const ticketDisplay = data?.ticketNumber || (data?.ticketId ? `#${data.ticketId}` : '');
+  $('#ctxTicketNumber').textContent = ticketDisplay;
   $('#ctxClientCode').textContent = data?.clientCode || '';
-  if (data?.ticketId) {
+  if (data?.ticketId || data?.ticketNumber) {
     updateContextBarState(boundTabId ? 'bound' : 'active', boundTabId ? 'привязано' : 'контекст найден');
   }
 }
@@ -179,6 +183,7 @@ function initTicketPanel() {
 
 function updateTicketCard(data) {
   ticketData = data;
+  $('#val-ticketNumber').textContent = data.ticketNumber || '—';
   $('#val-ticketId').textContent = data.ticketId || '—';
   $('#val-clientCode').textContent = data.clientCode || '—';
   $('#val-lineNumber').textContent = (data.lineNumbers || [])[0] || data.lineNumber || '—';
@@ -270,11 +275,72 @@ function createScenarioItem(scenario, builtIn) {
   const el = document.createElement('div');
   el.className = 'scenario-item';
   el.innerHTML = `
-    <span class="scenario-item__name">${scenario.name}</span>
-    <span class="scenario-item__badge">${builtIn ? 'встроенный' : 'пользовательский'} · ${scenario.steps.length} шагов</span>
+    <div class="scenario-item__info">
+      <span class="scenario-item__name">${escapeHtml(scenario.name)}</span>
+      <span class="scenario-item__badge">${builtIn ? 'встроенный' : 'пользовательский'} · ${scenario.steps.length} шагов</span>
+    </div>
+    ${builtIn ? '' : `<div class="scenario-item__actions">
+      <button class="btn-icon sc-edit" title="Редактировать">&#9998;</button>
+      <button class="btn-icon sc-duplicate" title="Дублировать">&#128203;</button>
+      <button class="btn-icon sc-delete" title="Удалить">&#128465;</button>
+    </div>`}
   `;
-  el.addEventListener('click', () => startPlaybook(scenario));
+
+  // Click on info area to start playbook
+  el.querySelector('.scenario-item__info').addEventListener('click', () => startPlaybook(scenario));
+
+  if (!builtIn) {
+    el.querySelector('.sc-edit').addEventListener('click', (e) => {
+      e.stopPropagation();
+      editScenario(scenario);
+    });
+    el.querySelector('.sc-duplicate').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const copy = { ...scenario, id: undefined, name: scenario.name + ' (копия)' };
+      await savePlaybook(copy);
+      showToast('Сценарий дублирован');
+      renderScenarioList();
+    });
+    el.querySelector('.sc-delete').addEventListener('click', (e) => {
+      e.stopPropagation();
+      showDeleteConfirm(el, scenario);
+    });
+  }
+
   return el;
+}
+
+function showDeleteConfirm(container, scenario) {
+  // Remove existing confirm bars
+  const existing = container.querySelector('.confirm-bar');
+  if (existing) { existing.remove(); return; }
+
+  const bar = document.createElement('div');
+  bar.className = 'confirm-bar';
+  bar.innerHTML = `
+    <span class="confirm-bar__text">Удалить "${escapeHtml(scenario.name)}"?</span>
+    <button class="btn btn--primary">Да</button>
+    <button class="btn">Нет</button>
+  `;
+  bar.querySelector('.btn--primary').addEventListener('click', async () => {
+    await deletePlaybook(scenario.id);
+    showToast('Сценарий удалён');
+    renderScenarioList();
+  });
+  bar.querySelector('.btn:last-child').addEventListener('click', () => bar.remove());
+  container.appendChild(bar);
+}
+
+function editScenario(scenario) {
+  // Simple rename via prompt-like inline edit
+  const newName = prompt('Название сценария:', scenario.name);
+  if (newName && newName.trim() && newName.trim() !== scenario.name) {
+    scenario.name = newName.trim();
+    savePlaybook(scenario).then(() => {
+      showToast('Сценарий переименован');
+      renderScenarioList();
+    });
+  }
 }
 
 async function startPlaybook(scenario) {
@@ -442,6 +508,7 @@ function initTemplatePanel() {
     e.target.value = '';
   });
 
+  initTemplateEditorButtons();
   renderTemplateList();
 }
 
@@ -498,6 +565,7 @@ function createTemplateItem(tpl, isRecommended) {
     <div class="tpl-item__actions">
       <button class="btn btn--primary btn-insert-tpl" style="font-size:10px;">Вставить в OTRS</button>
       <button class="btn btn-copy-tpl" style="font-size:10px;">Копировать</button>
+      ${isRecommended ? '' : `<button class="btn btn-edit-tpl" style="font-size:10px;">Редактировать</button>`}
       ${isRecommended ? '' : `<button class="btn btn--warn btn-delete-tpl" style="font-size:10px;">Удалить</button>`}
     </div>
   `;
@@ -512,6 +580,13 @@ function createTemplateItem(tpl, isRecommended) {
     navigator.clipboard.writeText(resolved);
     showToast('Шаблон скопирован в буфер');
   });
+  const editBtn = el.querySelector('.btn-edit-tpl');
+  if (editBtn) {
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openTemplateEditor(tpl);
+    });
+  }
   const delBtn = el.querySelector('.btn-delete-tpl');
   if (delBtn) {
     delBtn.addEventListener('click', async (e) => {
@@ -783,10 +858,10 @@ async function restoreState() {
     $('#btn-pin').classList.add('pinned');
   }
   if (boundTabId) {
-    $('#btn-bindTab').style.display = 'none';
-    $('#btn-unbindTab').style.display = '';
     updateContextBarState('bound', 'привязано');
   }
+  // Apply debug mode (default off — debug-only elements hidden by CSS/style)
+  applyDebugMode();
 }
 
 function requestInitialData() {
@@ -843,6 +918,67 @@ function listenForUpdates() {
         break;
     }
   });
+}
+
+// === Template Editor ===
+function openTemplateEditor(tpl) {
+  editingTemplateId = tpl.id;
+  $('#tpl-edit-name').value = tpl.name || '';
+  $('#tpl-edit-category').value = tpl.category || '';
+  $('#tpl-edit-tags').value = (tpl.tags || []).join(', ');
+  $('#tpl-edit-body').value = tpl.body || '';
+  $('#tpl-edit-panel').classList.remove('hidden');
+  $('#tpl-edit-panel').scrollIntoView({ behavior: 'smooth' });
+}
+
+function initTemplateEditorButtons() {
+  $('#btn-saveTplEdit').addEventListener('click', async () => {
+    if (!editingTemplateId) return;
+    const updates = {
+      name: $('#tpl-edit-name').value.trim(),
+      category: $('#tpl-edit-category').value.trim(),
+      tags: $('#tpl-edit-tags').value.split(',').map(t => t.trim()).filter(Boolean),
+      body: $('#tpl-edit-body').value.trim()
+    };
+    await updateTemplate(editingTemplateId, updates);
+    editingTemplateId = null;
+    $('#tpl-edit-panel').classList.add('hidden');
+    showToast('Шаблон обновлён');
+    renderTemplateList();
+  });
+  $('#btn-cancelTplEdit').addEventListener('click', () => {
+    editingTemplateId = null;
+    $('#tpl-edit-panel').classList.add('hidden');
+  });
+}
+
+// === Debug Mode ===
+function initDebugModeHotkey() {
+  // Ctrl+Shift+D toggles debug mode
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+      e.preventDefault();
+      toggleDebugMode();
+    }
+  });
+}
+
+function toggleDebugMode() {
+  debugMode = !debugMode;
+  chrome.runtime.sendMessage({ type: 'SET_DEBUG_MODE', enabled: debugMode });
+  applyDebugMode();
+  showToast(debugMode ? 'Debug mode ON' : 'Debug mode OFF');
+}
+
+function applyDebugMode() {
+  $$('.debug-only').forEach(el => {
+    el.style.display = debugMode ? '' : 'none';
+  });
+  // Show/hide unbind button based on state when debug is on
+  if (debugMode && boundTabId) {
+    $('#btn-unbindTab').style.display = '';
+    $('#btn-bindTab').style.display = 'none';
+  }
 }
 
 // === Utilities ===

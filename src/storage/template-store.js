@@ -68,7 +68,7 @@ export function resolveTemplatePlaceholders(body, context) {
   return body.replace(/\{([A-Z_]+)\}/g, (match, key) => {
     const map = {
       CLIENT_CODE: context.clientCode,
-      TICKET_NUMBER: context.ticketId || context.ticketNumber,
+      TICKET_NUMBER: context.ticketNumber || context.ticketId,
       LINE_NUMBER: context.lineNumber || (context.lineNumbers || [])[0],
       CLIENT_NAME: context.clientName,
       ATC_PLAN: context.atcPlan
