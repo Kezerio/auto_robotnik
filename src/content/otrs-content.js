@@ -10,9 +10,16 @@
   const LINE_NUMBER_RE = /(?:линия|line)\s*(?:номер|number|#|№)?\s*[:=]?\s*(\d{6,12})/gi;
   const ATC_PLAN_RE = /\b(Start|Business)\b/gi;
 
+  const TICKET_NUMBER_RE = /TLP#(\d+)/;
+
   function getTicketIdFromUrl() {
     const params = new URLSearchParams(window.location.search);
     return params.get('TicketID') || '';
+  }
+
+  function getTicketNumberFromTitle() {
+    const m = document.title.match(TICKET_NUMBER_RE);
+    return m ? m[0] : ''; // "TLP#123456"
   }
 
   function parseClientCodeFull(text) {
@@ -118,6 +125,7 @@
 
   function collectTicketData() {
     const ticketId = getTicketIdFromUrl();
+    const ticketNumber = getTicketNumberFromTitle();
     const sidebar = extractFromSidebar();
     const body = extractFromBody();
 
@@ -131,6 +139,7 @@
       source: 'otrs',
       url: window.location.href,
       ticketId,
+      ticketNumber,
       clientCode,
       clientCodeFull: body.clientCodes[0] || null,
       lineNumbers: body.lineNumbers,
@@ -259,11 +268,37 @@
     }
   }
 
-  // Автоматически отправить данные при загрузке (для side panel)
-  if (window.location.href.includes('AgentTicketZoom')) {
+  // Определить тип страницы OTRS
+  function detectOtrsPageType() {
+    const url = window.location.href;
+    if (url.includes('AgentTicketCompose')) return 'compose';
+    if (url.includes('AgentTicketNote')) return 'note';
+    if (url.includes('AgentTicketEmail')) return 'email';
+    if (url.includes('AgentTicketZoom')) return 'zoom';
+    return 'other';
+  }
+
+  // Автоматически отправить данные при загрузке
+  const pageType = detectOtrsPageType();
+
+  if (pageType === 'zoom') {
     setTimeout(() => {
       const data = collectTicketData();
       chrome.runtime.sendMessage({ type: 'OTRS_DATA_READY', data });
     }, 1000);
+  }
+
+  // Регистрируем compose/note/email вкладки для вставки шаблонов
+  if (pageType === 'compose' || pageType === 'note' || pageType === 'email') {
+    setTimeout(() => {
+      const ticketId = getTicketIdFromUrl();
+      const ticketNumber = getTicketNumberFromTitle();
+      chrome.runtime.sendMessage({
+        type: 'OTRS_EDITOR_TAB_READY',
+        pageType,
+        ticketId,
+        ticketNumber
+      });
+    }, 500);
   }
 })();

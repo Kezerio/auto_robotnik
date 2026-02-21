@@ -11,14 +11,15 @@
   <div class="context-bar" id="contextBar">
     <div class="context-bar__info">
       <span class="context-bar__status" id="ctxStatus" title="Статус контекста">нет контекста</span>
-      <span class="context-bar__ticket" id="ctxTicketId"></span>
+      <span class="context-bar__ticket" id="ctxTicketNumber"></span>
       <span class="context-bar__client" id="ctxClientCode"></span>
     </div>
     <div class="context-bar__actions">
-      <button class="btn-icon" id="btn-bindTab" title="Привязать к текущей вкладке">&#128279;</button>
-      <button class="btn-icon" id="btn-unbindTab" title="Отвязать" style="display:none">&#10060;</button>
-      <button class="btn-icon" id="btn-refreshCtx" title="Обновить данные">&#8635;</button>
-      <button class="btn-icon" id="btn-openTicket" title="Открыть тикет в новой вкладке">&#128279;</button>
+      <!-- Debug-only buttons (hidden by default) -->
+      <button class="btn-icon debug-only" id="btn-bindTab" title="Привязать к текущей вкладке" style="display:none">&#128279;</button>
+      <button class="btn-icon debug-only" id="btn-unbindTab" title="Отвязать" style="display:none">&#10060;</button>
+      <button class="btn-icon debug-only" id="btn-refreshCtx" title="Обновить данные" style="display:none">&#8635;</button>
+      <button class="btn-icon debug-only" id="btn-openTicket" title="Открыть тикет в новой вкладке" style="display:none">&#128279;</button>
     </div>
   </div>
 
@@ -40,15 +41,19 @@
     <button class="tab active" data-tab="ticket">Тикет</button>
     <button class="tab" data-tab="playbook">Сценарии</button>
     <button class="tab" data-tab="templates">Шаблоны</button>
-    <button class="tab" data-tab="recorder">Запись</button>
     <button class="tab" data-tab="knowledge">База знаний</button>
-    <button class="tab" data-tab="logs">Логи</button>
+    <button class="tab debug-only" data-tab="logs" style="display:none">Логи</button>
   </nav>
 
   <!-- ===== Вкладка: Тикет ===== -->
   <section class="panel" id="panel-ticket">
     <div class="card">
       <h2 class="card__title">Карточка тикета</h2>
+      <div class="card__row">
+        <span class="card__label">Номер заявки:</span>
+        <span class="card__value" id="val-ticketNumber">—</span>
+        <button class="btn-copy" data-copy="val-ticketNumber" title="Копировать">&#128203;</button>
+      </div>
       <div class="card__row">
         <span class="card__label">Ticket ID:</span>
         <span class="card__value" id="val-ticketId">—</span>
@@ -106,10 +111,10 @@
     </div>
   </section>
 
-  <!-- ===== Вкладка: Сценарии ===== -->
+  <!-- ===== Вкладка: Сценарии (+ Запись) ===== -->
   <section class="panel hidden" id="panel-playbook">
     <div class="card">
-      <h2 class="card__title">Выберите сценарий</h2>
+      <h2 class="card__title">Сценарии</h2>
       <div id="scenarioList" class="scenario-list"></div>
     </div>
     <div class="card hidden" id="playbookRunner">
@@ -118,6 +123,35 @@
       <div class="card__actions">
         <button class="btn btn--primary" id="btn-nextStep">Следующий шаг</button>
         <button class="btn btn--warn" id="btn-stopPlaybook">Остановить</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3 class="card__title">Запись нового сценария</h3>
+      <p class="card__desc">Включите запись, выполните действия на странице. Расширение запомнит каждый клик и ввод.</p>
+      <div class="card__actions">
+        <button class="btn btn--primary" id="btn-startRecord">Начать запись</button>
+        <button class="btn btn--warn" id="btn-stopRecord" disabled>Остановить запись</button>
+      </div>
+      <div id="recordedStepsList" class="steps-list"></div>
+      <div class="card__actions" id="recordActions" style="display:none">
+        <label class="field">
+          <span>Название сценария:</span>
+          <input type="text" id="recordName" placeholder="Мой сценарий">
+        </label>
+        <button class="btn btn--primary" id="btn-saveRecording">Сохранить</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3 class="card__title">Импорт / Экспорт</h3>
+      <div class="card__actions">
+        <button class="btn" id="btn-exportPlaybooks">Экспорт (JSON)</button>
+        <button class="btn" id="btn-importPlaybooks">Импорт (JSON)</button>
+        <input type="file" id="file-importPlaybooks" accept=".json" style="display:none">
+      </div>
+      <div class="card__actions">
+        <button class="btn" id="btn-exportTraining">Экспорт обучающих примеров</button>
+        <button class="btn" id="btn-importTraining">Импорт обучающих примеров</button>
+        <input type="file" id="file-importTraining" accept=".json" style="display:none">
       </div>
     </div>
   </section>
@@ -156,6 +190,30 @@
       <p class="card__desc">Плейсхолдеры: {CLIENT_CODE}, {TICKET_NUMBER}, {LINE_NUMBER}, {CLIENT_NAME}, {ATC_PLAN}</p>
       <button class="btn btn--primary" id="btn-addTpl">Добавить</button>
     </div>
+    <!-- Edit template panel (hidden by default) -->
+    <div class="card hidden" id="tpl-edit-panel">
+      <h3 class="card__title">Редактирование шаблона</h3>
+      <label class="field">
+        <span>Название:</span>
+        <input type="text" id="tpl-edit-name">
+      </label>
+      <label class="field">
+        <span>Категория:</span>
+        <input type="text" id="tpl-edit-category">
+      </label>
+      <label class="field">
+        <span>Теги (через запятую):</span>
+        <input type="text" id="tpl-edit-tags">
+      </label>
+      <label class="field">
+        <span>Текст шаблона:</span>
+        <textarea id="tpl-edit-body" rows="6"></textarea>
+      </label>
+      <div class="card__actions">
+        <button class="btn btn--primary" id="btn-saveTplEdit">Сохранить</button>
+        <button class="btn" id="btn-cancelTplEdit">Отмена</button>
+      </div>
+    </div>
     <div class="card">
       <h3 class="card__title">Импорт / Экспорт</h3>
       <div class="card__actions">
@@ -166,38 +224,7 @@
     </div>
   </section>
 
-  <!-- ===== Вкладка: Запись ===== -->
-  <section class="panel hidden" id="panel-recorder">
-    <div class="card">
-      <h2 class="card__title">Запись сценария</h2>
-      <p class="card__desc">Включите запись, выполните действия на странице. Расширение запомнит каждый клик и ввод.</p>
-      <div class="card__actions">
-        <button class="btn btn--primary" id="btn-startRecord">Начать запись</button>
-        <button class="btn btn--warn" id="btn-stopRecord" disabled>Остановить запись</button>
-      </div>
-      <div id="recordedStepsList" class="steps-list"></div>
-      <div class="card__actions" id="recordActions" style="display:none">
-        <label class="field">
-          <span>Название сценария:</span>
-          <input type="text" id="recordName" placeholder="Мой сценарий">
-        </label>
-        <button class="btn btn--primary" id="btn-saveRecording">Сохранить как Playbook</button>
-      </div>
-    </div>
-    <div class="card">
-      <h3 class="card__title">Импорт / Экспорт</h3>
-      <div class="card__actions">
-        <button class="btn" id="btn-exportPlaybooks">Экспорт Playbooks (JSON)</button>
-        <button class="btn" id="btn-importPlaybooks">Импорт Playbooks (JSON)</button>
-        <input type="file" id="file-importPlaybooks" accept=".json" style="display:none">
-      </div>
-      <div class="card__actions">
-        <button class="btn" id="btn-exportTraining">Экспорт обучающих примеров</button>
-        <button class="btn" id="btn-importTraining">Импорт обучающих примеров</button>
-        <input type="file" id="file-importTraining" accept=".json" style="display:none">
-      </div>
-    </div>
-  </section>
+  <!-- Recorder panel removed — merged into Scenarios tab -->
 
   <!-- ===== Вкладка: База знаний ===== -->
   <section class="panel hidden" id="panel-knowledge">

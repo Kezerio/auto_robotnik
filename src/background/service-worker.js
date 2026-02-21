@@ -21,8 +21,13 @@ const state = {
   teleoData: null,
   recording: false,
   recordedSteps: [],
-  mode: 'assist'
+  mode: 'assist',
+  debugMode: false
 };
+
+// Отслеживание вкладок compose/note для вставки шаблонов
+let lastEditorTabId = null;
+let lastEditorPageType = null;
 
 // === Открытие окна-консоли по клику на иконку ===
 chrome.action.onClicked.addListener(async (tab) => {
@@ -191,6 +196,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       addLog('Teleo', 'Данные Teleo получены', true);
       break;
 
+    case 'OTRS_EDITOR_TAB_READY':
+      lastEditorTabId = sender.tab?.id || null;
+      lastEditorPageType = msg.pageType;
+      addLog('OTRS', `Вкладка редактора (${msg.pageType}) зарегистрирована`, true);
+      break;
+
     case 'LOGIN_REQUIRED':
       broadcastToUI({ type: 'LOGIN_REQUIRED', data: msg.data });
       addLog(msg.data.system, 'Требуется авторизация', false, 'Пользователь должен войти вручную');
@@ -219,6 +230,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'SET_PIN_STATE':
       pinned = msg.pinned;
       chrome.storage.local.set({ windowPinned: pinned });
+      sendResponse({ ok: true });
+      return true;
+
+    case 'SET_DEBUG_MODE':
+      state.debugMode = msg.enabled;
       sendResponse({ ok: true });
       return true;
 
@@ -332,23 +348,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     // === Template insertion ===
     case 'INSERT_TEMPLATE_OTRS': {
-      // Найти вкладку OTRS с формой ответа
-      chrome.tabs.query({}, tabs => {
-        const otrsTab = tabs.find(t => t.url && t.url.includes('otrs.tlpn') &&
-          (t.url.includes('AgentTicketCompose') || t.url.includes('AgentTicketEmail') ||
-           t.url.includes('AgentTicketNote') || t.url.includes('AgentTicketZoom')));
-        if (otrsTab) {
-          chrome.tabs.sendMessage(otrsTab.id, { type: 'INSERT_TEMPLATE', text: msg.text }, resp => {
-            if (chrome.runtime.lastError) {
-              sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+      // Приоритет: зарегистрированная вкладка compose/note > поиск среди всех вкладок
+      const tryInsert = (tabId, cb) => {
+        chrome.tabs.sendMessage(tabId, { type: 'INSERT_TEMPLATE', text: msg.text }, resp => {
+          if (chrome.runtime.lastError) cb(null);
+          else cb(resp);
+        });
+      };
+
+      if (lastEditorTabId) {
+        // Проверяем, жива ли зарегистрированная вкладка
+        try {
+          chrome.tabs.get(lastEditorTabId, (tab) => {
+            if (chrome.runtime.lastError || !tab) {
+              lastEditorTabId = null;
+              fallbackInsert(msg.text, sendResponse);
             } else {
-              sendResponse(resp || { ok: true });
+              tryInsert(lastEditorTabId, (resp) => {
+                if (resp?.ok) sendResponse(resp);
+                else fallbackInsert(msg.text, sendResponse);
+              });
             }
           });
-        } else {
-          sendResponse({ ok: false, error: 'OTRS вкладка с формой не найдена' });
+        } catch {
+          lastEditorTabId = null;
+          fallbackInsert(msg.text, sendResponse);
         }
-      });
+      } else {
+        fallbackInsert(msg.text, sendResponse);
+      }
       return true;
     }
 
@@ -403,6 +431,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
   }
 });
+
+function fallbackInsert(text, sendResponse) {
+  // Поиск вкладки OTRS с формой: compose > note > email > zoom
+  chrome.tabs.query({}, tabs => {
+    const priorities = ['AgentTicketCompose', 'AgentTicketNote', 'AgentTicketEmail', 'AgentTicketZoom'];
+    let bestTab = null;
+    let bestPriority = priorities.length;
+    for (const t of tabs) {
+      if (!t.url || !t.url.includes('otrs.tlpn')) continue;
+      for (let i = 0; i < priorities.length; i++) {
+        if (t.url.includes(priorities[i]) && i < bestPriority) {
+          bestTab = t;
+          bestPriority = i;
+          break;
+        }
+      }
+    }
+    if (bestTab) {
+      chrome.tabs.sendMessage(bestTab.id, { type: 'INSERT_TEMPLATE', text }, resp => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+        } else {
+          sendResponse(resp || { ok: true });
+        }
+      });
+    } else {
+      sendResponse({ ok: false, error: 'OTRS вкладка с формой не найдена' });
+    }
+  });
+}
 
 async function toggleConsoleVisibility() {
   if (consoleWindowId === null) {

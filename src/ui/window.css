@@ -343,14 +343,23 @@ body {
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--bg);
-  cursor: pointer;
   transition: background 0.15s;
+  flex-wrap: wrap;
 }
 .scenario-item:hover { background: var(--bg-card-alt); }
+.scenario-item__info {
+  display: flex; align-items: center; gap: 8px; flex: 1; cursor: pointer;
+}
 .scenario-item__name { font-weight: 500; }
 .scenario-item__badge {
   font-size: 10px; padding: 2px 6px; border-radius: 3px;
   background: var(--bg-card-alt); color: var(--text-muted);
+}
+.scenario-item__actions {
+  display: flex; gap: 2px;
+}
+.scenario-item__actions .btn-icon {
+  font-size: 12px; padding: 2px 4px;
 }
 
 /* === Steps list === */
