@@ -13,7 +13,7 @@ import {
   resolveTemplatePlaceholders, recordTemplateUsage, getRecommendedTemplates,
   exportTemplates, importTemplates
 } from '../storage/template-store.js';
-import { BUILTIN_SCENARIOS } from '../playbook/scenarios.js';
+import { BUILTIN_SCENARIOS, SCENARIO_RUNEXIS_NUMBERS } from '../playbook/scenarios.js';
 import { PlaybookEngine, MODE_ASSIST, MODE_AUTOMATE } from '../playbook/engine.js';
 
 // === State ===
@@ -344,6 +344,12 @@ function editScenario(scenario) {
 }
 
 async function startPlaybook(scenario) {
+  // Runexis — специальный wizard вместо стандартного engine
+  if (scenario.id === 'builtin_runexis_numbers') {
+    showRunexisWizard();
+    return;
+  }
+
   engine = new PlaybookEngine();
   engine.setMode(currentMode);
   if (ticketData) {
@@ -979,6 +985,356 @@ function applyDebugMode() {
     $('#btn-unbindTab').style.display = '';
     $('#btn-bindTab').style.display = 'none';
   }
+}
+
+// === Runexis Wizard ===
+let rxTabId = null;
+let rxRunning = false;
+
+function showRunexisWizard() {
+  $('#runexisWizard').classList.remove('hidden');
+  $('#playbookRunner').classList.add('hidden');
+  $('#rxResult').classList.add('hidden');
+  $('#rxStatus').textContent = '';
+  $('#rxSteps').innerHTML = '';
+  $('#rx-city').value = '';
+  $('#rx-code').value = '495';
+  $('#rx-codeGroup').classList.add('hidden');
+  rxRunning = false;
+
+  // Показать/скрыть поле "Код" при вводе "Москва"
+  $('#rx-city').addEventListener('input', () => {
+    const isMoscow = $('#rx-city').value.trim().toLowerCase() === 'москва';
+    if (isMoscow) {
+      $('#rx-codeGroup').classList.remove('hidden');
+    } else {
+      $('#rx-codeGroup').classList.add('hidden');
+    }
+  });
+
+  // Кнопка запуска
+  $('#btn-rxStart').onclick = () => runRunexisWizard();
+  $('#btn-rxCancel').onclick = () => cancelRunexisWizard();
+
+  // Кнопки результата
+  $('#btn-rxCopy').onclick = () => {
+    const text = $('#rxResultText').value;
+    if (text) {
+      navigator.clipboard.writeText(text);
+      showToast('Номера скопированы в буфер');
+    }
+  };
+  $('#btn-rxInsertOtrs').onclick = () => insertRunexisToOtrs();
+  $('#btn-rxReInsert').onclick = () => insertRunexisToOtrs();
+}
+
+function cancelRunexisWizard() {
+  rxRunning = false;
+  $('#runexisWizard').classList.add('hidden');
+}
+
+function rxAddStep(text, status) {
+  const el = document.createElement('div');
+  el.className = `step-item step-item--${status}`;
+  el.innerHTML = `
+    <span class="step-item__num">&bull;</span>
+    <span class="step-item__desc">${escapeHtml(text)}</span>
+    <span class="step-item__status">${status === 'done' ? 'OK' : status === 'error' ? 'ошибка' : status === 'running' ? '...' : ''}</span>
+  `;
+  $('#rxSteps').appendChild(el);
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  return el;
+}
+
+function rxUpdateStep(el, status, extraText) {
+  el.className = `step-item step-item--${status}`;
+  const statusEl = el.querySelector('.step-item__status');
+  statusEl.textContent = status === 'done' ? 'OK' : status === 'error' ? 'ошибка' : '';
+  if (extraText) {
+    const desc = el.querySelector('.step-item__desc');
+    desc.textContent += ' — ' + extraText;
+  }
+}
+
+function rxSetStatus(text) {
+  $('#rxStatus').textContent = text;
+}
+
+async function runRunexisWizard() {
+  const city = $('#rx-city').value.trim();
+  if (!city) { showToast('Введите город'); return; }
+
+  const numberType = $('#rx-numberType').value;
+  const isMoscow = city.toLowerCase() === 'москва';
+  const codeChoice = isMoscow ? $('#rx-code').value : null;
+
+  rxRunning = true;
+  $('#rxSteps').innerHTML = '';
+  $('#rxResult').classList.add('hidden');
+  $('#btn-rxStart').disabled = true;
+
+  addLog('Runexis', `Запуск: ${city}, ${numberType}${isMoscow ? ', код: ' + codeChoice : ''}`, true);
+
+  try {
+    // Шаг 1: Открыть / найти вкладку Runexis
+    let step = rxAddStep('Открываю Runexis...', 'running');
+    rxSetStatus('Открываю Runexis...');
+
+    // Проверяем, есть ли уже открытая вкладка
+    const existing = await sendMsg({ type: 'RUNEXIS_FIND_TAB' });
+    if (existing?.tabId) {
+      rxTabId = existing.tabId;
+      // Активируем вкладку
+      await chrome.tabs.update(rxTabId, { active: true });
+      rxUpdateStep(step, 'done', 'вкладка найдена');
+    } else {
+      // Открываем новую вкладку
+      const resp = await sendMsg({ type: 'RUNEXIS_OPEN_TAB', url: 'https://did-trunk.runexis.ru/site/login' });
+      if (!resp?.ok) throw new Error('Не удалось открыть вкладку Runexis');
+      rxTabId = resp.tabId;
+      rxUpdateStep(step, 'done');
+    }
+
+    // Шаг 2: Ждём загрузку и проверяем авторизацию
+    step = rxAddStep('Проверяю авторизацию...', 'running');
+    rxSetStatus('Проверяю авторизацию...');
+    await waitForTabLoad(rxTabId, 5000);
+
+    const authCheck = await sendToRunexisTab({ type: 'RUNEXIS_CHECK_AUTH' });
+    if (authCheck?.isLoginPage) {
+      rxUpdateStep(step, 'running', 'страница логина');
+
+      // Пробуем нажать "Войти" (автозаполнение)
+      const loginResp = await sendToRunexisTab({ type: 'RUNEXIS_LOGIN' });
+      if (loginResp?.ok) {
+        rxAddStep('Нажата кнопка "Войти" (автозаполнение)', 'done');
+        // Ждём перенаправления
+        await waitForTabLoad(rxTabId, 8000);
+        // Проверяем снова
+        const recheck = await sendToRunexisTab({ type: 'RUNEXIS_CHECK_AUTH' });
+        if (recheck?.isLoginPage) {
+          // Нужен ручной вход
+          rxUpdateStep(step, 'assist');
+          const manualStep = rxAddStep('Требуется ручной вход — войдите и нажмите "Продолжить"', 'assist');
+          rxSetStatus('Войдите вручную в Runexis, затем нажмите "Продолжить"');
+          await waitForUserContinue(manualStep);
+          // Перепроверяем
+          await waitForTabLoad(rxTabId, 3000);
+        }
+      } else {
+        // Кнопка не найдена — ручной вход
+        const manualStep = rxAddStep('Требуется ручной вход — войдите и нажмите "Продолжить"', 'assist');
+        rxSetStatus('Войдите вручную в Runexis, затем нажмите "Продолжить"');
+        await waitForUserContinue(manualStep);
+        await waitForTabLoad(rxTabId, 3000);
+      }
+      rxUpdateStep(step, 'done', 'авторизован');
+    } else {
+      rxUpdateStep(step, 'done', 'уже авторизован');
+    }
+
+    if (!rxRunning) return; // отменено
+
+    // Шаг 3: Переходим на /numbers
+    step = rxAddStep('Открываю страницу номеров...', 'running');
+    rxSetStatus('Открываю страницу номеров...');
+    await chrome.tabs.update(rxTabId, { url: 'https://did-trunk.runexis.ru/numbers' });
+    await waitForTabLoad(rxTabId, 8000);
+    rxUpdateStep(step, 'done');
+
+    // Определяем, нужно ли делать 2 прохода (Москва + оба кода)
+    const codes = isMoscow && codeChoice === 'both' ? ['495', '499'] : [codeChoice];
+    let allNumbers = [];
+
+    for (const code of codes) {
+      if (!rxRunning) return;
+
+      const passLabel = codes.length > 1 ? ` (код ${code})` : '';
+
+      // Шаг 4: Заполняем фильтры
+      step = rxAddStep(`Заполняю фильтры${passLabel}...`, 'running');
+      rxSetStatus(`Заполняю фильтры${passLabel}...`);
+      await delay(500); // дадим странице подготовиться
+      const filterResp = await sendToRunexisTab({ type: 'RUNEXIS_SET_FILTERS', city, numberType, code });
+      if (!filterResp?.ok) {
+        rxUpdateStep(step, 'error', filterResp?.error);
+      } else {
+        rxUpdateStep(step, 'done');
+      }
+
+      // Шаг 5: Нажимаем "Применить"
+      step = rxAddStep(`Применяю фильтры${passLabel}...`, 'running');
+      rxSetStatus(`Применяю фильтры${passLabel}...`);
+      await delay(700); // дадим время автокомплиту
+      const applyResp = await sendToRunexisTab({ type: 'RUNEXIS_APPLY_FILTERS' });
+      if (!applyResp?.ok) {
+        rxUpdateStep(step, 'error', applyResp?.error);
+      } else {
+        rxUpdateStep(step, 'done');
+      }
+
+      // Ждём загрузку результатов
+      await waitForTabLoad(rxTabId, 8000);
+      await delay(1000);
+
+      // Шаг 6: Пагинация — перейти на страницу 3 > 2 > 1
+      step = rxAddStep(`Выбираю страницу${passLabel}...`, 'running');
+      rxSetStatus(`Определяю пагинацию${passLabel}...`);
+      const pagInfo = await sendToRunexisTab({ type: 'RUNEXIS_GET_PAGINATION_INFO' });
+      let targetPage = 1;
+      if (pagInfo?.ok) {
+        if (pagInfo.maxPage >= 3) targetPage = 3;
+        else if (pagInfo.maxPage >= 2) targetPage = 2;
+        else targetPage = 1;
+      }
+
+      if (targetPage > 1) {
+        await sendToRunexisTab({ type: 'RUNEXIS_GO_TO_PAGE', page: targetPage });
+        await waitForTabLoad(rxTabId, 5000);
+        await delay(800);
+      }
+      rxUpdateStep(step, 'done', `стр. ${targetPage}`);
+
+      // Шаг 7: Собираем номера
+      step = rxAddStep(`Собираю номера${passLabel}...`, 'running');
+      rxSetStatus(`Собираю номера${passLabel}...`);
+      const collectResp = await sendToRunexisTab({ type: 'RUNEXIS_COLLECT_NUMBERS' });
+      if (collectResp?.ok && collectResp.numbers?.length > 0) {
+        rxUpdateStep(step, 'done', `${collectResp.numbers.length} номеров`);
+        allNumbers = allNumbers.concat(collectResp.numbers);
+      } else {
+        rxUpdateStep(step, 'error', 'Номера не найдены');
+      }
+    }
+
+    // Удаляем дубли
+    allNumbers = [...new Set(allNumbers)];
+
+    if (allNumbers.length === 0) {
+      rxSetStatus('Номера не найдены');
+      showToast('Номера не найдены');
+      return;
+    }
+
+    // Сохраняем результат
+    const resultText = allNumbers.join('\n');
+    await sendMsg({ type: 'RUNEXIS_STORE_RESULT', numbers: allNumbers });
+
+    // Копируем в буфер
+    await navigator.clipboard.writeText(resultText);
+
+    // Показываем результат
+    $('#rxResult').classList.remove('hidden');
+    $('#rxResultInfo').textContent = `Готово: ${allNumbers.length} номеров, скопировано`;
+    $('#rxResultText').value = resultText;
+
+    // Проверяем доступность OTRS editor
+    checkOtrsEditorAvailable();
+
+    rxSetStatus(`Готово: ${allNumbers.length} номеров`);
+    showToast(`Готово: ${allNumbers.length} номеров, скопировано в буфер`);
+    addLog('Runexis', `Подобрано ${allNumbers.length} номеров для ${city}`, true);
+
+  } catch (err) {
+    rxSetStatus(`Ошибка: ${err.message}`);
+    showToast(`Ошибка Runexis: ${err.message}`);
+    addLog('Runexis', `Ошибка: ${err.message}`, false);
+  } finally {
+    rxRunning = false;
+    $('#btn-rxStart').disabled = false;
+  }
+}
+
+function checkOtrsEditorAvailable() {
+  chrome.runtime.sendMessage({ type: 'RUNEXIS_FIND_TAB' }, () => {
+    // Проверяем наличие OTRS compose/note вкладки
+    chrome.tabs.query({}, tabs => {
+      const otrsEditor = tabs.find(t => t.url &&
+        t.url.includes('otrs.tlpn') &&
+        (t.url.includes('AgentTicketCompose') || t.url.includes('AgentTicketNote')));
+      const btn = $('#btn-rxInsertOtrs');
+      if (otrsEditor) {
+        btn.disabled = false;
+        btn.title = 'Вставить номера в OTRS';
+      } else {
+        btn.disabled = true;
+        btn.title = 'Откройте окно ответа/заметки в OTRS';
+      }
+    });
+  });
+}
+
+async function insertRunexisToOtrs() {
+  const text = $('#rxResultText').value;
+  if (!text) { showToast('Нет данных для вставки'); return; }
+
+  chrome.runtime.sendMessage({ type: 'RUNEXIS_INSERT_OTRS', text }, resp => {
+    if (resp?.ok) {
+      showToast('Номера вставлены в OTRS');
+      addLog('Runexis', 'Номера вставлены в OTRS', true);
+    } else {
+      showToast(`Ошибка вставки: ${resp?.error || 'OTRS вкладка не найдена'}`);
+      // Fallback — уже в буфере
+      navigator.clipboard.writeText(text);
+      showToast('Скопировано в буфер (OTRS не найден)');
+    }
+  });
+}
+
+function waitForUserContinue(stepEl) {
+  return new Promise((resolve) => {
+    const bar = document.createElement('div');
+    bar.className = 'confirm-bar';
+    bar.innerHTML = `
+      <span class="confirm-bar__text">Нажмите после входа:</span>
+      <button class="btn btn--primary">Продолжить</button>
+    `;
+    bar.querySelector('.btn--primary').addEventListener('click', () => {
+      bar.remove();
+      resolve();
+    });
+    stepEl.appendChild(bar);
+  });
+}
+
+function sendMsg(msg) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(msg, resp => {
+      resolve(resp);
+    });
+  });
+}
+
+function sendToRunexisTab(msg) {
+  return new Promise((resolve) => {
+    if (!rxTabId) { resolve({ ok: false, error: 'Нет вкладки Runexis' }); return; }
+    chrome.runtime.sendMessage({ type: 'RUNEXIS_SEND_TO_TAB', tabId: rxTabId, message: msg }, resp => {
+      resolve(resp);
+    });
+  });
+}
+
+function waitForTabLoad(tabId, timeout) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve(); // resolve anyway after timeout
+    }, timeout);
+
+    function listener(updatedTabId, changeInfo) {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        // Small extra delay for JS initialization
+        setTimeout(resolve, 500);
+      }
+    }
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+function delay(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }
 
 // === Utilities ===

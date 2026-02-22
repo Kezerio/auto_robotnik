@@ -125,6 +125,46 @@
         <button class="btn btn--warn" id="btn-stopPlaybook">Остановить</button>
       </div>
     </div>
+
+    <!-- Runexis Wizard -->
+    <div class="card hidden" id="runexisWizard">
+      <h3 class="card__title">Runexis — подобрать номера</h3>
+      <label class="field">
+        <span>Город:</span>
+        <input type="text" id="rx-city" placeholder="Москва, Санкт-Петербург...">
+      </label>
+      <label class="field">
+        <span>Тип номеров:</span>
+        <select id="rx-numberType">
+          <option value="городские">Городские</option>
+          <option value="мобильные">Мобильные</option>
+        </select>
+      </label>
+      <div class="field hidden" id="rx-codeGroup">
+        <span>Код (только Москва):</span>
+        <select id="rx-code">
+          <option value="495">495</option>
+          <option value="499">499</option>
+          <option value="both">Оба (495 + 499)</option>
+        </select>
+      </div>
+      <div class="card__actions">
+        <button class="btn btn--primary" id="btn-rxStart">Запустить</button>
+        <button class="btn btn--warn" id="btn-rxCancel">Отмена</button>
+      </div>
+      <div id="rxStatus" class="rx-status"></div>
+      <div id="rxSteps" class="steps-list"></div>
+      <div class="card hidden" id="rxResult">
+        <h4 class="card__subtitle">Результат</h4>
+        <div class="rx-result-info" id="rxResultInfo"></div>
+        <textarea id="rxResultText" rows="6" readonly class="rx-result-text"></textarea>
+        <div class="card__actions">
+          <button class="btn btn--primary" id="btn-rxCopy">Копировать в буфер</button>
+          <button class="btn" id="btn-rxInsertOtrs" disabled title="Откройте окно ответа/заметки в OTRS">Вставить в OTRS</button>
+          <button class="btn" id="btn-rxReInsert">Повторно вставить</button>
+        </div>
+      </div>
+    </div>
     <div class="card">
       <h3 class="card__title">Запись нового сценария</h3>
       <p class="card__desc">Включите запись, выполните действия на странице. Расширение запомнит каждый клик и ввод.</p>

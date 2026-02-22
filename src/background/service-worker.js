@@ -22,7 +22,8 @@ const state = {
   recording: false,
   recordedSteps: [],
   mode: 'assist',
-  debugMode: false
+  debugMode: false,
+  lastRunexisResult: null // последний результат подбора номеров
 };
 
 // Отслеживание вкладок compose/note для вставки шаблонов
@@ -421,6 +422,78 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
 
+    // === Runexis ===
+    case 'RUNEXIS_OPEN_TAB': {
+      chrome.tabs.create({ url: msg.url, active: true }, tab => {
+        sendResponse({ ok: true, tabId: tab.id });
+      });
+      return true;
+    }
+
+    case 'RUNEXIS_SEND_TO_TAB': {
+      chrome.tabs.sendMessage(msg.tabId, msg.message, resp => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+        } else {
+          sendResponse(resp);
+        }
+      });
+      return true;
+    }
+
+    case 'RUNEXIS_FIND_TAB': {
+      chrome.tabs.query({}, tabs => {
+        const found = tabs.find(t => t.url && t.url.includes('did-trunk.runexis.ru'));
+        sendResponse({ ok: true, tabId: found?.id || null, url: found?.url || null });
+      });
+      return true;
+    }
+
+    case 'RUNEXIS_STORE_RESULT': {
+      state.lastRunexisResult = msg.numbers;
+      chrome.storage.local.set({ lastRunexisResult: msg.numbers });
+      addLog('Runexis', `Сохранено ${msg.numbers.length} номеров`, true);
+      sendResponse({ ok: true });
+      return true;
+    }
+
+    case 'RUNEXIS_GET_RESULT': {
+      if (state.lastRunexisResult) {
+        sendResponse({ ok: true, numbers: state.lastRunexisResult });
+      } else {
+        chrome.storage.local.get('lastRunexisResult', (data) => {
+          sendResponse({ ok: true, numbers: data.lastRunexisResult || [] });
+        });
+      }
+      return true;
+    }
+
+    case 'RUNEXIS_INSERT_OTRS': {
+      // Вставить lastRunexisResult в OTRS compose/note
+      const text = msg.text;
+      if (lastEditorTabId) {
+        try {
+          chrome.tabs.get(lastEditorTabId, (tab) => {
+            if (chrome.runtime.lastError || !tab) {
+              lastEditorTabId = null;
+              fallbackInsert(text, sendResponse);
+            } else {
+              chrome.tabs.sendMessage(lastEditorTabId, { type: 'INSERT_TEMPLATE', text }, resp => {
+                if (chrome.runtime.lastError) fallbackInsert(text, sendResponse);
+                else sendResponse(resp || { ok: true });
+              });
+            }
+          });
+        } catch {
+          lastEditorTabId = null;
+          fallbackInsert(text, sendResponse);
+        }
+      } else {
+        fallbackInsert(text, sendResponse);
+      }
+      return true;
+    }
+
     // === Show/hide console ===
     case 'TOGGLE_CONSOLE':
       toggleConsoleVisibility();
@@ -489,7 +562,7 @@ function broadcastToUI(msg) {
 function isAllowedUrl(url) {
   const patterns = [
     'otrs.tlpn', 'intra10.office.tlpn', 'ringmeadmin.tlpn',
-    'apiproxy.telphin.ru', 'teleo.telphin.ru'
+    'apiproxy.telphin.ru', 'teleo.telphin.ru', 'did-trunk.runexis.ru'
   ];
   return patterns.some(p => url.includes(p));
 }

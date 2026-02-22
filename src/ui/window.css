@@ -449,6 +449,23 @@ body {
 .confirm-bar__text { flex: 1; }
 .confirm-bar .btn { font-size: 11px; }
 
+/* === Runexis Wizard === */
+.rx-status {
+  font-size: 12px; color: var(--text-muted);
+  padding: 4px 0; min-height: 18px;
+}
+.rx-result-info {
+  font-size: 13px; font-weight: 600;
+  color: var(--success); margin-bottom: 6px;
+}
+.rx-result-text {
+  width: 100%; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); color: var(--text);
+  font-size: 11px; font-family: monospace;
+  resize: vertical;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
