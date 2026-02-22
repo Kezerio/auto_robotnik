@@ -205,7 +205,114 @@ export const SCENARIO_POSTPONE_14 = {
   ]
 };
 
+/**
+ * Сценарий: Runexis — подобрать номера
+ * Запускается из консоли с вводом: город, тип номеров, код (для Москвы).
+ * Этот сценарий управляется из UI (runexisWizard), а не через обычный PlaybookEngine,
+ * так как требует ввода пользователя и многошаговой логики (2 прохода для Москвы).
+ */
+export const SCENARIO_RUNEXIS_NUMBERS = {
+  id: 'builtin_runexis_numbers',
+  name: 'Runexis — подобрать номера',
+  builtIn: true,
+  requiresInput: true,
+  inputType: 'runexis',
+  steps: [
+    {
+      id: 'open_login',
+      type: 'step',
+      description: 'Открыть Runexis (логин)',
+      system: 'Runexis',
+      action: 'navigate',
+      params: {
+        url: 'https://did-trunk.runexis.ru/site/login',
+        activate: true
+      },
+      waitForConfirm: true
+    },
+    {
+      id: 'check_auth',
+      type: 'auto',
+      description: 'Проверить авторизацию',
+      system: 'Runexis',
+      action: 'custom',
+      params: {
+        instruction: 'Если страница логина — дождаться автозаполнения, нажать "Войти". Если требуется ручной вход — пауза.'
+      },
+      waitForConfirm: false
+    },
+    {
+      id: 'open_numbers',
+      type: 'step',
+      description: 'Открыть страницу номеров',
+      system: 'Runexis',
+      action: 'navigate',
+      params: {
+        url: 'https://did-trunk.runexis.ru/numbers',
+        activate: true
+      },
+      waitForConfirm: true
+    },
+    {
+      id: 'set_filters',
+      type: 'auto',
+      description: 'Заполнить фильтры (город, тип, код)',
+      system: 'Runexis',
+      action: 'custom',
+      params: {
+        instruction: 'Заполнить поля: Город, Тип = Простой, Код (если Москва).'
+      },
+      waitForConfirm: false
+    },
+    {
+      id: 'apply_filters',
+      type: 'step',
+      description: 'Нажать "Применить"',
+      system: 'Runexis',
+      action: 'custom',
+      params: {
+        instruction: 'Нажать кнопку "Применить" для поиска номеров.'
+      },
+      waitForConfirm: true
+    },
+    {
+      id: 'navigate_page',
+      type: 'auto',
+      description: 'Перейти на нужную страницу (3, 2 или 1)',
+      system: 'Runexis',
+      action: 'custom',
+      params: {
+        instruction: 'Перейти на страницу 3 (если есть), иначе 2, иначе 1.'
+      },
+      waitForConfirm: false
+    },
+    {
+      id: 'collect_numbers',
+      type: 'auto',
+      description: 'Собрать номера со страницы',
+      system: 'Runexis',
+      action: 'custom',
+      params: {
+        instruction: 'Извлечь все номера, нормализовать до 11 цифр (7 спереди), сформировать список.'
+      },
+      waitForConfirm: false
+    },
+    {
+      id: 'copy_result',
+      type: 'checkpoint',
+      description: 'Скопировать результат в буфер + показать кнопку "Вставить в OTRS"',
+      system: 'Runexis',
+      action: 'custom',
+      params: {
+        instruction: 'Результат скопирован в буфер. Нажмите "Вставить в OTRS" для вставки в окно ответа/заметки.'
+      },
+      waitForConfirm: true
+    }
+  ]
+};
+
 export const BUILTIN_SCENARIOS = [
   SCENARIO_ATC_CONNECT,
-  SCENARIO_POSTPONE_14
+  SCENARIO_POSTPONE_14,
+  SCENARIO_RUNEXIS_NUMBERS
 ];
