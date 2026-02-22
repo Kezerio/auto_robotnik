@@ -4,7 +4,6 @@
  *
  * Обрабатывает сообщения:
  * - RUNEXIS_CHECK_AUTH — проверка авторизации
- * - RUNEXIS_LOGIN — нажать кнопку "Войти" (автозаполнение)
  * - RUNEXIS_SET_FILTERS — заполнить фильтры (город, тип, код)
  * - RUNEXIS_APPLY_FILTERS — нажать "Применить"
  * - RUNEXIS_GO_TO_PAGE — перейти на нужную страницу пагинации
@@ -22,21 +21,6 @@
           || !!document.querySelector('input[name="LoginForm[username]"]');
         const isNumbersPage = window.location.pathname.includes('/numbers');
         sendResponse({ ok: true, isLoginPage, isNumbersPage, url: window.location.href });
-        return true;
-      }
-
-      case 'RUNEXIS_LOGIN': {
-        // Ищем кнопку "Войти" и нажимаем
-        const loginBtn = document.querySelector('button[type="submit"]')
-          || document.querySelector('input[type="submit"]')
-          || document.querySelector('.btn-login')
-          || document.querySelector('form#login-form button');
-        if (loginBtn) {
-          loginBtn.click();
-          sendResponse({ ok: true });
-        } else {
-          sendResponse({ ok: false, error: 'Кнопка входа не найдена' });
-        }
         return true;
       }
 

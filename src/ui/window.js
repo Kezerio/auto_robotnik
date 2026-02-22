@@ -1003,20 +1003,13 @@ function showRunexisWizard() {
   rxRunning = false;
 
   // Показать/скрыть поле "Код" при вводе "Москва"
-  $('#rx-city').addEventListener('input', () => {
+  $('#rx-city').oninput = () => {
     const isMoscow = $('#rx-city').value.trim().toLowerCase() === 'москва';
-    if (isMoscow) {
-      $('#rx-codeGroup').classList.remove('hidden');
-    } else {
-      $('#rx-codeGroup').classList.add('hidden');
-    }
-  });
+    $('#rx-codeGroup').classList.toggle('hidden', !isMoscow);
+  };
 
-  // Кнопка запуска
   $('#btn-rxStart').onclick = () => runRunexisWizard();
   $('#btn-rxCancel').onclick = () => cancelRunexisWizard();
-
-  // Кнопки результата
   $('#btn-rxCopy').onclick = () => {
     const text = $('#rxResultText').value;
     if (text) {
@@ -1026,6 +1019,17 @@ function showRunexisWizard() {
   };
   $('#btn-rxInsertOtrs').onclick = () => insertRunexisToOtrs();
   $('#btn-rxReInsert').onclick = () => insertRunexisToOtrs();
+  $('#btn-rxClearClipboard').onclick = () => {
+    navigator.clipboard.writeText('');
+    showToast('Буфер обмена очищен');
+  };
+  $('#btn-rxClearResult').onclick = async () => {
+    await sendMsg({ type: 'RUNEXIS_CLEAR_RESULT' });
+    $('#rxResultText').value = '';
+    $('#rxResultInfo').textContent = '';
+    $('#rxResult').classList.add('hidden');
+    showToast('Результат очищен');
+  };
 }
 
 function cancelRunexisWizard() {
@@ -1039,7 +1043,7 @@ function rxAddStep(text, status) {
   el.innerHTML = `
     <span class="step-item__num">&bull;</span>
     <span class="step-item__desc">${escapeHtml(text)}</span>
-    <span class="step-item__status">${status === 'done' ? 'OK' : status === 'error' ? 'ошибка' : status === 'running' ? '...' : ''}</span>
+    <span class="step-item__status">${status === 'done' ? 'OK' : status === 'error' ? 'ошибка' : status === 'running' ? '...' : status === 'assist' ? 'ручной' : ''}</span>
   `;
   $('#rxSteps').appendChild(el);
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1049,7 +1053,7 @@ function rxAddStep(text, status) {
 function rxUpdateStep(el, status, extraText) {
   el.className = `step-item step-item--${status}`;
   const statusEl = el.querySelector('.step-item__status');
-  statusEl.textContent = status === 'done' ? 'OK' : status === 'error' ? 'ошибка' : '';
+  statusEl.textContent = status === 'done' ? 'OK' : status === 'error' ? 'ошибка' : status === 'assist' ? 'ручной' : '';
   if (extraText) {
     const desc = el.querySelector('.step-item__desc');
     desc.textContent += ' — ' + extraText;
@@ -1076,73 +1080,65 @@ async function runRunexisWizard() {
   addLog('Runexis', `Запуск: ${city}, ${numberType}${isMoscow ? ', код: ' + codeChoice : ''}`, true);
 
   try {
-    // Шаг 1: Открыть / найти вкладку Runexis
-    let step = rxAddStep('Открываю Runexis...', 'running');
+    // === ШАГ 1: Открыть / найти вкладку Runexis ===
+    let step = rxAddStep('Шаг 1: Открываю Runexis...', 'running');
     rxSetStatus('Открываю Runexis...');
 
-    // Проверяем, есть ли уже открытая вкладка
     const existing = await sendMsg({ type: 'RUNEXIS_FIND_TAB' });
-    if (existing?.tabId) {
+    if (existing?.ok && existing.tabId) {
       rxTabId = existing.tabId;
-      // Активируем вкладку
-      await chrome.tabs.update(rxTabId, { active: true });
-      rxUpdateStep(step, 'done', 'вкладка найдена');
+      const actResp = await sendMsg({ type: 'RUNEXIS_ACTIVATE_TAB', tabId: rxTabId });
+      if (!actResp?.ok) {
+        // Вкладка мертва — открываем новую
+        const newResp = await sendMsg({ type: 'RUNEXIS_OPEN_TAB', url: 'https://did-trunk.runexis.ru/site/login' });
+        if (!newResp?.ok) throw new Error(`Не удалось открыть Runexis: ${newResp?.error || 'неизвестная ошибка'}`);
+        rxTabId = newResp.tabId;
+        rxUpdateStep(step, 'done', 'новая вкладка');
+      } else {
+        rxUpdateStep(step, 'done', 'вкладка найдена');
+      }
     } else {
-      // Открываем новую вкладку
       const resp = await sendMsg({ type: 'RUNEXIS_OPEN_TAB', url: 'https://did-trunk.runexis.ru/site/login' });
-      if (!resp?.ok) throw new Error('Не удалось открыть вкладку Runexis');
+      if (!resp?.ok) throw new Error(`Не удалось открыть Runexis: ${resp?.error || 'неизвестная ошибка'}`);
       rxTabId = resp.tabId;
-      rxUpdateStep(step, 'done');
+      rxUpdateStep(step, 'done', 'новая вкладка');
     }
 
-    // Шаг 2: Ждём загрузку и проверяем авторизацию
-    step = rxAddStep('Проверяю авторизацию...', 'running');
-    rxSetStatus('Проверяю авторизацию...');
-    await waitForTabLoad(rxTabId, 5000);
+    // === ШАГ 2: Проверка авторизации ===
+    step = rxAddStep('Шаг 2: Проверяю авторизацию...', 'running');
+    rxSetStatus('Жду загрузку страницы...');
+    await sendMsg({ type: 'RUNEXIS_WAIT_TAB_LOAD', tabId: rxTabId, timeout: 8000 });
 
     const authCheck = await sendToRunexisTab({ type: 'RUNEXIS_CHECK_AUTH' });
-    if (authCheck?.isLoginPage) {
-      rxUpdateStep(step, 'running', 'страница логина');
+    if (!authCheck?.ok) {
+      rxUpdateStep(step, 'error', `Не удалось проверить: ${authCheck?.error || 'content script не ответил'}`);
+      throw new Error(`Ошибка авторизации: ${authCheck?.error || 'content script Runexis не ответил. Проверьте разрешения расширения.'}`);
+    }
 
-      // Пробуем нажать "Войти" (автозаполнение)
-      const loginResp = await sendToRunexisTab({ type: 'RUNEXIS_LOGIN' });
-      if (loginResp?.ok) {
-        rxAddStep('Нажата кнопка "Войти" (автозаполнение)', 'done');
-        // Ждём перенаправления
-        await waitForTabLoad(rxTabId, 8000);
-        // Проверяем снова
-        const recheck = await sendToRunexisTab({ type: 'RUNEXIS_CHECK_AUTH' });
-        if (recheck?.isLoginPage) {
-          // Нужен ручной вход
-          rxUpdateStep(step, 'assist');
-          const manualStep = rxAddStep('Требуется ручной вход — войдите и нажмите "Продолжить"', 'assist');
-          rxSetStatus('Войдите вручную в Runexis, затем нажмите "Продолжить"');
-          await waitForUserContinue(manualStep);
-          // Перепроверяем
-          await waitForTabLoad(rxTabId, 3000);
-        }
-      } else {
-        // Кнопка не найдена — ручной вход
-        const manualStep = rxAddStep('Требуется ручной вход — войдите и нажмите "Продолжить"', 'assist');
-        rxSetStatus('Войдите вручную в Runexis, затем нажмите "Продолжить"');
-        await waitForUserContinue(manualStep);
-        await waitForTabLoad(rxTabId, 3000);
-      }
+    if (authCheck.isLoginPage) {
+      // НЕ пытаемся автологин — сразу пауза для ручного входа
+      rxUpdateStep(step, 'assist', 'требуется ручной вход');
+      const manualStep = rxAddStep('Войдите вручную в Runexis, затем нажмите "Продолжить"', 'assist');
+      rxSetStatus('Войдите вручную в Runexis, затем нажмите "Продолжить"');
+      await waitForUserContinue(manualStep);
+      // Ждём загрузку после входа
+      await sendMsg({ type: 'RUNEXIS_WAIT_TAB_LOAD', tabId: rxTabId, timeout: 5000 });
       rxUpdateStep(step, 'done', 'авторизован');
     } else {
       rxUpdateStep(step, 'done', 'уже авторизован');
     }
 
-    if (!rxRunning) return; // отменено
+    if (!rxRunning) return;
 
-    // Шаг 3: Переходим на /numbers
-    step = rxAddStep('Открываю страницу номеров...', 'running');
-    rxSetStatus('Открываю страницу номеров...');
-    await chrome.tabs.update(rxTabId, { url: 'https://did-trunk.runexis.ru/numbers' });
-    await waitForTabLoad(rxTabId, 8000);
+    // === ШАГ 3: Переход на /numbers ===
+    step = rxAddStep('Шаг 3: Открываю страницу номеров...', 'running');
+    rxSetStatus('Перехожу на /numbers...');
+    const navResp = await sendMsg({ type: 'RUNEXIS_NAVIGATE_TAB', tabId: rxTabId, url: 'https://did-trunk.runexis.ru/numbers' });
+    if (!navResp?.ok) throw new Error(`Ошибка навигации: ${navResp?.error || 'unknown'}`);
+    await sendMsg({ type: 'RUNEXIS_WAIT_TAB_LOAD', tabId: rxTabId, timeout: 10000 });
     rxUpdateStep(step, 'done');
 
-    // Определяем, нужно ли делать 2 прохода (Москва + оба кода)
+    // Определяем проходы
     const codes = isMoscow && codeChoice === 'both' ? ['495', '499'] : [codeChoice];
     let allNumbers = [];
 
@@ -1151,63 +1147,69 @@ async function runRunexisWizard() {
 
       const passLabel = codes.length > 1 ? ` (код ${code})` : '';
 
-      // Шаг 4: Заполняем фильтры
-      step = rxAddStep(`Заполняю фильтры${passLabel}...`, 'running');
+      // === ШАГ 4: Фильтры ===
+      step = rxAddStep(`Шаг 4: Фильтры${passLabel}...`, 'running');
       rxSetStatus(`Заполняю фильтры${passLabel}...`);
-      await delay(500); // дадим странице подготовиться
+      await delay(500);
       const filterResp = await sendToRunexisTab({ type: 'RUNEXIS_SET_FILTERS', city, numberType, code });
       if (!filterResp?.ok) {
-        rxUpdateStep(step, 'error', filterResp?.error);
+        rxUpdateStep(step, 'error', `Ошибка фильтров: ${filterResp?.error || 'content script не ответил'}`);
       } else {
         rxUpdateStep(step, 'done');
       }
 
-      // Шаг 5: Нажимаем "Применить"
-      step = rxAddStep(`Применяю фильтры${passLabel}...`, 'running');
-      rxSetStatus(`Применяю фильтры${passLabel}...`);
-      await delay(700); // дадим время автокомплиту
+      // === ШАГ 5: Применить ===
+      step = rxAddStep(`Шаг 5: Применяю${passLabel}...`, 'running');
+      rxSetStatus(`Нажимаю "Применить"${passLabel}...`);
+      await delay(700);
       const applyResp = await sendToRunexisTab({ type: 'RUNEXIS_APPLY_FILTERS' });
       if (!applyResp?.ok) {
-        rxUpdateStep(step, 'error', applyResp?.error);
+        rxUpdateStep(step, 'error', `Кнопка: ${applyResp?.error || 'не найдена'}`);
       } else {
         rxUpdateStep(step, 'done');
       }
 
-      // Ждём загрузку результатов
-      await waitForTabLoad(rxTabId, 8000);
+      // Ждём результаты
+      await sendMsg({ type: 'RUNEXIS_WAIT_TAB_LOAD', tabId: rxTabId, timeout: 10000 });
       await delay(1000);
 
-      // Шаг 6: Пагинация — перейти на страницу 3 > 2 > 1
-      step = rxAddStep(`Выбираю страницу${passLabel}...`, 'running');
+      // === ШАГ 6: Пагинация ===
+      step = rxAddStep(`Шаг 6: Пагинация${passLabel}...`, 'running');
       rxSetStatus(`Определяю пагинацию${passLabel}...`);
       const pagInfo = await sendToRunexisTab({ type: 'RUNEXIS_GET_PAGINATION_INFO' });
       let targetPage = 1;
       if (pagInfo?.ok) {
         if (pagInfo.maxPage >= 3) targetPage = 3;
         else if (pagInfo.maxPage >= 2) targetPage = 2;
-        else targetPage = 1;
       }
 
       if (targetPage > 1) {
-        await sendToRunexisTab({ type: 'RUNEXIS_GO_TO_PAGE', page: targetPage });
-        await waitForTabLoad(rxTabId, 5000);
-        await delay(800);
+        const goResp = await sendToRunexisTab({ type: 'RUNEXIS_GO_TO_PAGE', page: targetPage });
+        if (!goResp?.ok) {
+          rxUpdateStep(step, 'error', `Страница ${targetPage}: ${goResp?.error || 'не найдена'}`);
+          targetPage = 1; // остаёмся на текущей
+        } else {
+          await sendMsg({ type: 'RUNEXIS_WAIT_TAB_LOAD', tabId: rxTabId, timeout: 8000 });
+          await delay(800);
+        }
       }
       rxUpdateStep(step, 'done', `стр. ${targetPage}`);
 
-      // Шаг 7: Собираем номера
-      step = rxAddStep(`Собираю номера${passLabel}...`, 'running');
+      // === ШАГ 7: Сбор номеров ===
+      step = rxAddStep(`Шаг 7: Сбор номеров${passLabel}...`, 'running');
       rxSetStatus(`Собираю номера${passLabel}...`);
       const collectResp = await sendToRunexisTab({ type: 'RUNEXIS_COLLECT_NUMBERS' });
-      if (collectResp?.ok && collectResp.numbers?.length > 0) {
+      if (!collectResp?.ok) {
+        rxUpdateStep(step, 'error', `Ошибка сбора: ${collectResp?.error || 'content script не ответил'}`);
+      } else if (collectResp.numbers?.length > 0) {
         rxUpdateStep(step, 'done', `${collectResp.numbers.length} номеров`);
         allNumbers = allNumbers.concat(collectResp.numbers);
       } else {
-        rxUpdateStep(step, 'error', 'Номера не найдены');
+        rxUpdateStep(step, 'error', 'Номера не найдены на странице');
       }
     }
 
-    // Удаляем дубли
+    // Дедупликация
     allNumbers = [...new Set(allNumbers)];
 
     if (allNumbers.length === 0) {
@@ -1216,11 +1218,9 @@ async function runRunexisWizard() {
       return;
     }
 
-    // Сохраняем результат
+    // Сохраняем и копируем
     const resultText = allNumbers.join('\n');
     await sendMsg({ type: 'RUNEXIS_STORE_RESULT', numbers: allNumbers });
-
-    // Копируем в буфер
     await navigator.clipboard.writeText(resultText);
 
     // Показываем результат
@@ -1228,8 +1228,8 @@ async function runRunexisWizard() {
     $('#rxResultInfo').textContent = `Готово: ${allNumbers.length} номеров, скопировано`;
     $('#rxResultText').value = resultText;
 
-    // Проверяем доступность OTRS editor
-    checkOtrsEditorAvailable();
+    // Проверяем OTRS editor
+    await checkOtrsEditorAvailable();
 
     rxSetStatus(`Готово: ${allNumbers.length} номеров`);
     showToast(`Готово: ${allNumbers.length} номеров, скопировано в буфер`);
@@ -1245,40 +1245,31 @@ async function runRunexisWizard() {
   }
 }
 
-function checkOtrsEditorAvailable() {
-  chrome.runtime.sendMessage({ type: 'RUNEXIS_FIND_TAB' }, () => {
-    // Проверяем наличие OTRS compose/note вкладки
-    chrome.tabs.query({}, tabs => {
-      const otrsEditor = tabs.find(t => t.url &&
-        t.url.includes('otrs.tlpn') &&
-        (t.url.includes('AgentTicketCompose') || t.url.includes('AgentTicketNote')));
-      const btn = $('#btn-rxInsertOtrs');
-      if (otrsEditor) {
-        btn.disabled = false;
-        btn.title = 'Вставить номера в OTRS';
-      } else {
-        btn.disabled = true;
-        btn.title = 'Откройте окно ответа/заметки в OTRS';
-      }
-    });
-  });
+async function checkOtrsEditorAvailable() {
+  const resp = await sendMsg({ type: 'RUNEXIS_CHECK_OTRS_EDITOR' });
+  const btn = $('#btn-rxInsertOtrs');
+  if (resp?.ok && resp.available) {
+    btn.disabled = false;
+    btn.title = 'Вставить номера в OTRS';
+  } else {
+    btn.disabled = true;
+    btn.title = 'Откройте окно ответа/заметки в OTRS';
+  }
 }
 
 async function insertRunexisToOtrs() {
   const text = $('#rxResultText').value;
   if (!text) { showToast('Нет данных для вставки'); return; }
 
-  chrome.runtime.sendMessage({ type: 'RUNEXIS_INSERT_OTRS', text }, resp => {
-    if (resp?.ok) {
-      showToast('Номера вставлены в OTRS');
-      addLog('Runexis', 'Номера вставлены в OTRS', true);
-    } else {
-      showToast(`Ошибка вставки: ${resp?.error || 'OTRS вкладка не найдена'}`);
-      // Fallback — уже в буфере
-      navigator.clipboard.writeText(text);
-      showToast('Скопировано в буфер (OTRS не найден)');
-    }
-  });
+  const resp = await sendMsg({ type: 'RUNEXIS_INSERT_OTRS', text });
+  if (resp?.ok) {
+    showToast('Номера вставлены в OTRS');
+    addLog('Runexis', 'Номера вставлены в OTRS', true);
+  } else {
+    showToast(`Ошибка вставки: ${resp?.error || 'OTRS вкладка не найдена'}`);
+    navigator.clipboard.writeText(text);
+    showToast('Скопировано в буфер (OTRS не найден)');
+  }
 }
 
 function waitForUserContinue(stepEl) {
@@ -1300,36 +1291,25 @@ function waitForUserContinue(stepEl) {
 function sendMsg(msg) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(msg, resp => {
-      resolve(resp);
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+      } else {
+        resolve(resp);
+      }
     });
   });
 }
 
 function sendToRunexisTab(msg) {
   return new Promise((resolve) => {
-    if (!rxTabId) { resolve({ ok: false, error: 'Нет вкладки Runexis' }); return; }
+    if (!rxTabId) { resolve({ ok: false, error: 'Нет вкладки Runexis (tabId не задан)' }); return; }
     chrome.runtime.sendMessage({ type: 'RUNEXIS_SEND_TO_TAB', tabId: rxTabId, message: msg }, resp => {
-      resolve(resp);
-    });
-  });
-}
-
-function waitForTabLoad(tabId, timeout) {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      resolve(); // resolve anyway after timeout
-    }, timeout);
-
-    function listener(updatedTabId, changeInfo) {
-      if (updatedTabId === tabId && changeInfo.status === 'complete') {
-        clearTimeout(timer);
-        chrome.tabs.onUpdated.removeListener(listener);
-        // Small extra delay for JS initialization
-        setTimeout(resolve, 500);
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+      } else {
+        resolve(resp);
       }
-    }
-    chrome.tabs.onUpdated.addListener(listener);
+    });
   });
 }
 

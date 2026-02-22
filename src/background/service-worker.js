@@ -425,8 +425,52 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // === Runexis ===
     case 'RUNEXIS_OPEN_TAB': {
       chrome.tabs.create({ url: msg.url, active: true }, tab => {
-        sendResponse({ ok: true, tabId: tab.id });
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+        } else {
+          sendResponse({ ok: true, tabId: tab.id });
+        }
       });
+      return true;
+    }
+
+    case 'RUNEXIS_ACTIVATE_TAB': {
+      chrome.tabs.update(msg.tabId, { active: true }, tab => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+        } else {
+          sendResponse({ ok: true, tabId: tab?.id });
+        }
+      });
+      return true;
+    }
+
+    case 'RUNEXIS_NAVIGATE_TAB': {
+      chrome.tabs.update(msg.tabId, { url: msg.url }, tab => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+        } else {
+          sendResponse({ ok: true, tabId: tab?.id });
+        }
+      });
+      return true;
+    }
+
+    case 'RUNEXIS_WAIT_TAB_LOAD': {
+      const targetTabId = msg.tabId;
+      const timeout = msg.timeout || 8000;
+      const timer = setTimeout(() => {
+        chrome.tabs.onUpdated.removeListener(onUpdate);
+        sendResponse({ ok: true, timedOut: true });
+      }, timeout);
+      function onUpdate(updatedId, changeInfo) {
+        if (updatedId === targetTabId && changeInfo.status === 'complete') {
+          clearTimeout(timer);
+          chrome.tabs.onUpdated.removeListener(onUpdate);
+          setTimeout(() => sendResponse({ ok: true, timedOut: false }), 500);
+        }
+      }
+      chrome.tabs.onUpdated.addListener(onUpdate);
       return true;
     }
 
@@ -443,6 +487,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'RUNEXIS_FIND_TAB': {
       chrome.tabs.query({}, tabs => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
         const found = tabs.find(t => t.url && t.url.includes('did-trunk.runexis.ru'));
         sendResponse({ ok: true, tabId: found?.id || null, url: found?.url || null });
       });
@@ -457,6 +505,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
 
+    case 'RUNEXIS_CLEAR_RESULT': {
+      state.lastRunexisResult = null;
+      chrome.storage.local.remove('lastRunexisResult');
+      addLog('Runexis', 'Результат очищен', true);
+      sendResponse({ ok: true });
+      return true;
+    }
+
     case 'RUNEXIS_GET_RESULT': {
       if (state.lastRunexisResult) {
         sendResponse({ ok: true, numbers: state.lastRunexisResult });
@@ -465,6 +521,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, numbers: data.lastRunexisResult || [] });
         });
       }
+      return true;
+    }
+
+    case 'RUNEXIS_CHECK_OTRS_EDITOR': {
+      chrome.tabs.query({}, tabs => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        const otrsEditor = tabs.find(t => t.url &&
+          t.url.includes('otrs.tlpn') &&
+          (t.url.includes('AgentTicketCompose') || t.url.includes('AgentTicketNote')));
+        sendResponse({ ok: true, available: !!otrsEditor });
+      });
       return true;
     }
 
