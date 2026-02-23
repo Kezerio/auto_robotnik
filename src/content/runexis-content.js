@@ -337,28 +337,23 @@
   }
 
   /**
-   * Установить значение через select2: открыть дропдаун, ввести текст, выбрать ТОЧНОЕ совпадение
+   * Установить значение через select2: открыть дропдаун, ввести текст в поиск,
+   * дождаться AJAX-подсказок, КЛИКНУТЬ по нужной строке в списке.
+   * Никаких val().trigger('change') — только реальный клик по DOM-элементу.
    */
   async function setSelect2Value(ctx, searchText) {
-    const selId = ctx.select.id;
-    const selName = ctx.select.name;
-    const jsSelector = selId ? '#' + selId : 'select[name="' + selName + '"]';
+    const jsSelector = buildJsSelector(ctx);
 
-    // Открываем дропдаун через jQuery API
-    runInPage(`
-      if (typeof jQuery !== 'undefined' && jQuery.fn.select2) {
-        var $s = jQuery('${jsSelector}');
-        if ($s.length && $s.data('select2')) { $s.select2('open'); }
-      }
-    `);
+    // 1. Открываем дропдаун
+    await openSelect2Dropdown(ctx, jsSelector);
     await delay(300);
 
-    // Ищем поле поиска select2
+    // 2. Находим поле поиска
     let searchField = document.querySelector('.select2-search__field')
       || document.querySelector('.select2-search input');
 
-    // Запасной: кликаем по контейнеру
     if (!searchField) {
+      // Попробуем кликнуть по контейнеру
       const selection = ctx.container.querySelector('.select2-selection');
       if (selection) {
         selection.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
@@ -369,80 +364,64 @@
       }
     }
 
-    if (searchField) {
-      searchField.value = '';
-      searchField.focus();
+    if (!searchField) return false;
 
-      // Вводим посимвольно для AJAX-автодополнения
-      for (let i = 0; i < searchText.length; i++) {
-        searchField.value = searchText.substring(0, i + 1);
-        searchField.dispatchEvent(new Event('input', { bubbles: true }));
-        searchField.dispatchEvent(new KeyboardEvent('keyup', { key: searchText[i], bubbles: true }));
-      }
-
-      // Ждём загрузку результатов (AJAX)
-      await delay(1200);
-
-      // Ищем ТОЧНОЕ совпадение среди результатов
-      const results = document.querySelectorAll(
-        '.select2-results__option:not(.select2-results__option--disabled):not(.loading-results)'
-      );
-
-      // Приоритет 1: точное совпадение
-      for (const r of results) {
-        const text = r.textContent.trim().toLowerCase();
-        if (text === searchText.toLowerCase()) {
-          r.click();
-          return true;
-        }
-      }
-      // Приоритет 2: начинается с нужного текста
-      for (const r of results) {
-        const text = r.textContent.trim().toLowerCase();
-        if (text.startsWith(searchText.toLowerCase())) {
-          r.click();
-          return true;
-        }
-      }
-      // Приоритет 3: содержит нужный текст
-      for (const r of results) {
-        const text = r.textContent.trim().toLowerCase();
-        if (text.includes(searchText.toLowerCase())) {
-          r.click();
-          return true;
-        }
-      }
-      // НЕ кликаем первый попавшийся — это приводит к выбору не того города
+    // 3. Вводим текст посимвольно (для AJAX-автодополнения)
+    searchField.value = '';
+    searchField.focus();
+    for (let i = 0; i < searchText.length; i++) {
+      searchField.value = searchText.substring(0, i + 1);
+      searchField.dispatchEvent(new Event('input', { bubbles: true }));
+      searchField.dispatchEvent(new KeyboardEvent('keyup', { key: searchText[i], bubbles: true }));
     }
 
-    // Последняя попытка: через jQuery option matching (точное)
+    // 4. Ждём загрузки AJAX-результатов
+    await delay(1500);
+
+    // 5. Кликаем по ТОЧНО подходящей строке в dropdown
+    return clickSelect2Option(searchText);
+  }
+
+  /**
+   * Открыть select2 через jQuery API (без ввода текста)
+   */
+  async function openSelect2Dropdown(ctx, jsSelector) {
     runInPage(`
       if (typeof jQuery !== 'undefined' && jQuery.fn.select2) {
         var $s = jQuery('${jsSelector}');
-        if ($s.length) {
-          var searchLower = '${searchText.toLowerCase()}';
-          var found = false;
-          $s.find('option').each(function() {
-            if (this.textContent.trim().toLowerCase() === searchLower) {
-              $s.val(this.value).trigger('change');
-              found = true;
-              return false;
-            }
-          });
-          if (!found) {
-            $s.find('option').each(function() {
-              if (this.textContent.trim().toLowerCase().indexOf(searchLower) === 0) {
-                $s.val(this.value).trigger('change');
-                return false;
-              }
-            });
-          }
-          try { $s.select2('close'); } catch(e) {}
-        }
+        if ($s.length && $s.data('select2')) { $s.select2('open'); }
       }
     `);
-    await delay(300);
-    return true;
+  }
+
+  /**
+   * Выбрать пункт в открытом select2-dropdown кликом.
+   * Приоритет: точное совпадение → начинается с → содержит.
+   * Если ничего не нашли — НЕ кликаем первый попавшийся.
+   */
+  function clickSelect2Option(searchText) {
+    const results = document.querySelectorAll(
+      '.select2-results__option:not(.select2-results__option--disabled):not(.loading-results)'
+    );
+    const lower = searchText.toLowerCase();
+
+    // Приоритет 1: точное совпадение
+    for (const r of results) {
+      if (r.textContent.trim().toLowerCase() === lower) { r.click(); return true; }
+    }
+    // Приоритет 2: начинается с
+    for (const r of results) {
+      if (r.textContent.trim().toLowerCase().startsWith(lower)) { r.click(); return true; }
+    }
+    // Приоритет 3: содержит
+    for (const r of results) {
+      if (r.textContent.trim().toLowerCase().includes(lower)) { r.click(); return true; }
+    }
+    return false;
+  }
+
+  function buildJsSelector(ctx) {
+    return ctx.select.id ? '#' + ctx.select.id : 'select[name="' + ctx.select.name + '"]';
   }
 
   function findCityInput() {
@@ -515,30 +494,44 @@
   // Тип номера: очистить + установить "Простой"
   // =============================================
 
+  /**
+   * Тип: открыть dropdown, КЛИКНУТЬ по "Простой" в списке.
+   * НЕ вводить текст, НЕ жать Enter — только клик по строке.
+   */
   async function setTypeFilter() {
     // select2
     const s2 = findSelect2For('type', 'тип', 'kind');
     if (s2) {
-      // Сначала очистим через select2 open → поиск → выбор
-      const selId = s2.select.id;
-      const selName = s2.select.name;
-      const jsSelector = selId ? '#' + selId : 'select[name="' + selName + '"]';
+      const jsSelector = buildJsSelector(s2);
 
-      const opt = Array.from(s2.select.options).find(o =>
-        o.text.toLowerCase().includes('простой') || o.value.toLowerCase().includes('simple')
-      );
-      if (opt) {
-        runInPage(`
-          if (typeof jQuery !== 'undefined' && jQuery.fn.select2) {
-            var $s = jQuery('${jsSelector}');
-            if ($s.length) { $s.val('${opt.value}').trigger('change'); }
-          }
-        `);
-        return true;
+      // Открываем дропдаун
+      await openSelect2Dropdown(s2, jsSelector);
+      await delay(400);
+
+      // Кликаем по пункту "Простой" в открытом списке
+      const clicked = clickSelect2Option('Простой');
+      if (clicked) return true;
+
+      // Если не нашли в dropdown — попробуем через поиск
+      const searchField = document.querySelector('.select2-search__field');
+      if (searchField) {
+        searchField.value = 'Простой';
+        searchField.dispatchEvent(new Event('input', { bubbles: true }));
+        await delay(500);
+        const clicked2 = clickSelect2Option('Простой');
+        if (clicked2) return true;
       }
+
+      // Закрываем
+      runInPage(`
+        if (typeof jQuery !== 'undefined' && jQuery.fn.select2) {
+          try { jQuery('${jsSelector}').select2('close'); } catch(e) {}
+        }
+      `);
+      return false;
     }
 
-    // Обычный select
+    // Обычный select (без select2)
     const typeSelect = document.querySelector('select[name*="type" i]')
       || document.querySelector('select[name*="тип" i]')
       || document.querySelector('#type')
