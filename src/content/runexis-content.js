@@ -6,6 +6,7 @@
  * - RUNEXIS_CHECK_AUTH — проверка авторизации
  * - RUNEXIS_SET_FILTERS — очистить старые + заполнить фильтры (город, тип, код)
  * - RUNEXIS_APPLY_FILTERS — нажать "Применить"
+ * - RUNEXIS_WAIT_FOR_RESULTS — ждать до 30с появления результатов или сообщения "ничего не найдено"
  * - RUNEXIS_GO_TO_PAGE — перейти на нужную страницу пагинации
  * - RUNEXIS_COLLECT_NUMBERS — собрать номера со страницы
  * - RUNEXIS_COPY_TO_CLIPBOARD — скопировать текст (от имени этой вкладки)
@@ -48,6 +49,14 @@
         } else {
           sendResponse({ ok: false, error: 'Кнопка "Применить" не найдена' });
         }
+        return true;
+      }
+
+      case 'RUNEXIS_WAIT_FOR_RESULTS': {
+        const timeout = msg.timeout || 30000;
+        waitForResults(timeout).then(result => {
+          sendResponse(result);
+        });
         return true;
       }
 
@@ -96,7 +105,6 @@
         navigator.clipboard.writeText(text).then(() => {
           sendResponse({ ok: true });
         }).catch(err => {
-          // Fallback: execCommand
           try {
             const ta = document.createElement('textarea');
             ta.value = text;
@@ -119,75 +127,159 @@
   });
 
   // =============================================
-  // Фильтры: очистка + установка + диагностика
+  // Ожидание результатов после "Применить"
+  // =============================================
+
+  /**
+   * Ждать появления результатов (карточки/строки) или "ничего не найдено"
+   * Polls every 500ms, timeout по умолчанию 30с
+   */
+  function waitForResults(timeout) {
+    return new Promise(resolve => {
+      const startTime = Date.now();
+      const interval = setInterval(() => {
+        // Проверяем: есть ли карточки/строки с номерами?
+        const hasNumbers = document.querySelectorAll(
+          'td, .number, .phone-number, .did-number, [data-number], .card, .item, .result-item, table tbody tr'
+        ).length > 0;
+
+        // Проверяем: "ничего не найдено"
+        const bodyText = document.body.innerText.toLowerCase();
+        const notFound = bodyText.includes('ничего не найдено')
+          || bodyText.includes('нет результатов')
+          || bodyText.includes('no results')
+          || bodyText.includes('не найдено');
+
+        if (hasNumbers || notFound) {
+          clearInterval(interval);
+          resolve({ ok: true, hasNumbers, notFound });
+          return;
+        }
+
+        if (Date.now() - startTime > timeout) {
+          clearInterval(interval);
+          resolve({ ok: false, error: `Не дождался результатов за ${Math.round(timeout / 1000)} секунд`, timedOut: true });
+        }
+      }, 500);
+    });
+  }
+
+  // =============================================
+  // Фильтры: очистка + установка + верификация
   // =============================================
 
   async function handleSetFilters(city, numberType, code) {
     const diag = {
       citySet: false, typeSet: false, codeSet: false,
-      cityValue: '', typeValue: '', codeValue: ''
+      cityValue: '', typeValue: '', codeValue: '',
+      cityVerified: false
     };
 
-    // Шаг 1: Очистить все фильтры
-    clearAllFilters();
-    await delay(500);
-
-    // Шаг 2: Город (select2, autocomplete или обычный input)
-    diag.citySet = await setCityFilter(city);
+    // === Шаг 1: Очистить город (× у select2 тегов) ===
+    clearSelect2Field('city', 'region', 'город');
     await delay(300);
+
+    // === Шаг 2: Очистить тип ===
+    clearSelect2Field('type', 'тип', 'kind');
+    await delay(300);
+
+    // === Шаг 3: Очистить код (на случай если остался от прошлого запуска) ===
+    clearSelect2Field('code', 'код');
+    clearCodeInput();
+    await delay(300);
+
+    // === Шаг 4: Установить город + верификация ===
+    diag.citySet = await setCityFilter(city);
+    await delay(400);
     diag.cityValue = getSelectedCityText();
 
-    // Шаг 3: Тип = "Простой"
-    diag.typeSet = setTypeFilter();
+    // Верификация: проверяем, что выбран именно нужный город
+    if (diag.cityValue && !diag.cityValue.toLowerCase().includes(city.toLowerCase())) {
+      // Выбран не тот город — повторяем
+      clearSelect2Field('city', 'region', 'город');
+      await delay(400);
+      diag.citySet = await setCityFilter(city);
+      await delay(400);
+      diag.cityValue = getSelectedCityText();
+    }
+    diag.cityVerified = diag.cityValue.toLowerCase().includes(city.toLowerCase());
+
+    // === Шаг 5: Тип = "Простой" ===
+    diag.typeSet = await setTypeFilter();
+    await delay(200);
     diag.typeValue = getSelectedTypeText();
 
-    // Шаг 4: Код (только Москва)
+    // === Шаг 6: Код — ТОЛЬКО для Москвы, иначе гарантированно пусто ===
     if (code) {
       diag.codeSet = setCodeFilter(code);
       diag.codeValue = code;
     }
+    // Для не-Москвы код уже очищен в шаге 3
 
     return { ok: true, diagnostics: diag };
   }
 
-  /**
-   * Очистить все поля фильтров (select2, autocomplete, обычные input/select)
-   */
-  function clearAllFilters() {
-    // 1. Кнопки "×" select2
-    document.querySelectorAll('.select2-selection__clear').forEach(btn => {
-      try { btn.click(); } catch (e) {}
-    });
+  // =============================================
+  // Целевая очистка одного select2-поля по паттернам имени
+  // =============================================
 
-    // 2. Сброс обычных select
-    document.querySelectorAll('select').forEach(sel => {
-      if (sel.closest('.select2-container')) return;
+  /**
+   * Очистить конкретное select2 поле: найти его × кнопку и кликнуть,
+   * затем обнулить через jQuery API
+   */
+  function clearSelect2Field(...namePatterns) {
+    const s2 = findSelect2For(...namePatterns);
+    if (s2) {
+      // Кликаем × в rendered-области этого конкретного select2
+      const clearBtns = s2.container.querySelectorAll('.select2-selection__clear');
+      clearBtns.forEach(btn => { try { btn.click(); } catch (e) {} });
+
+      // Удаляем теги (.select2-selection__choice) если это multiple
+      const tags = s2.container.querySelectorAll('.select2-selection__choice__remove');
+      tags.forEach(btn => { try { btn.click(); } catch (e) {} });
+
+      // Через jQuery API
+      const selId = s2.select.id;
+      const selName = s2.select.name;
+      const jsSelector = selId ? '#' + selId : 'select[name="' + selName + '"]';
+      runInPage(`
+        if (typeof jQuery !== 'undefined' && jQuery.fn && jQuery.fn.select2) {
+          var $s = jQuery('${jsSelector}');
+          if ($s.length && $s.data('select2')) { $s.val(null).trigger('change'); }
+        }
+      `);
+      return;
+    }
+
+    // Обычный select
+    const selectors = namePatterns.map(p => `select[name*="${p}" i]`).join(', ');
+    document.querySelectorAll(selectors).forEach(sel => {
       sel.selectedIndex = 0;
       sel.dispatchEvent(new Event('change', { bubbles: true }));
     });
 
-    // 3. jQuery select2 API через инъекцию в страницу
-    runInPage(`
-      if (typeof jQuery !== 'undefined' && jQuery.fn && jQuery.fn.select2) {
-        jQuery('select').each(function() {
-          try {
-            var $s = jQuery(this);
-            if ($s.data('select2')) { $s.val(null).trigger('change'); }
-          } catch(e) {}
-        });
-      }
-    `);
-
-    // 4. Очистка текстовых полей
-    document.querySelectorAll(
-      'input[type="text"], input[type="search"], input:not([type]):not([name*="csrf" i]):not([name*="token" i])'
-    ).forEach(input => {
-      if (input.closest('.select2-container')) return;
-      if (input.closest('.select2-search')) return;
+    // Обычный input
+    const inputSelectors = namePatterns.map(p => `input[name*="${p}" i]`).join(', ');
+    document.querySelectorAll(inputSelectors).forEach(input => {
       input.value = '';
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
     });
+  }
+
+  /**
+   * Явная очистка input-поля кода (на случай если code — это input, а не select)
+   */
+  function clearCodeInput() {
+    const codeInput = document.querySelector('input[name*="code" i]')
+      || document.querySelector('input[name*="код" i]')
+      || document.querySelector('#code')
+      || document.querySelector('input[placeholder*="Код" i]');
+    if (codeInput) {
+      codeInput.value = '';
+      codeInput.dispatchEvent(new Event('input', { bubbles: true }));
+      codeInput.dispatchEvent(new Event('change', { bubbles: true }));
+    }
   }
 
   // =============================================
@@ -231,7 +323,6 @@
         return { select: sel, container: next };
       }
     }
-    // Поиск через контейнеры select2
     const containers = document.querySelectorAll('.select2-container');
     for (const c of containers) {
       const sel = c.previousElementSibling;
@@ -246,7 +337,7 @@
   }
 
   /**
-   * Установить значение через select2 API (открыть дропдаун, ввести текст, выбрать)
+   * Установить значение через select2: открыть дропдаун, ввести текст, выбрать ТОЧНОЕ совпадение
    */
   async function setSelect2Value(ctx, searchText) {
     const selId = ctx.select.id;
@@ -266,7 +357,7 @@
     let searchField = document.querySelector('.select2-search__field')
       || document.querySelector('.select2-search input');
 
-    // Запасной вариант: кликаем по контейнеру select2
+    // Запасной: кликаем по контейнеру
     if (!searchField) {
       const selection = ctx.container.querySelector('.select2-selection');
       if (selection) {
@@ -290,38 +381,62 @@
       }
 
       // Ждём загрузку результатов (AJAX)
-      await delay(1000);
+      await delay(1200);
 
-      // Кликаем подходящий результат
+      // Ищем ТОЧНОЕ совпадение среди результатов
       const results = document.querySelectorAll(
         '.select2-results__option:not(.select2-results__option--disabled):not(.loading-results)'
       );
+
+      // Приоритет 1: точное совпадение
       for (const r of results) {
         const text = r.textContent.trim().toLowerCase();
-        if (text === searchText.toLowerCase() || text.startsWith(searchText.toLowerCase())) {
+        if (text === searchText.toLowerCase()) {
           r.click();
           return true;
         }
       }
-      // Fallback: первый результат
-      if (results.length > 0) {
-        results[0].click();
-        return true;
+      // Приоритет 2: начинается с нужного текста
+      for (const r of results) {
+        const text = r.textContent.trim().toLowerCase();
+        if (text.startsWith(searchText.toLowerCase())) {
+          r.click();
+          return true;
+        }
       }
+      // Приоритет 3: содержит нужный текст
+      for (const r of results) {
+        const text = r.textContent.trim().toLowerCase();
+        if (text.includes(searchText.toLowerCase())) {
+          r.click();
+          return true;
+        }
+      }
+      // НЕ кликаем первый попавшийся — это приводит к выбору не того города
     }
 
-    // Последняя попытка: через jQuery option matching
+    // Последняя попытка: через jQuery option matching (точное)
     runInPage(`
       if (typeof jQuery !== 'undefined' && jQuery.fn.select2) {
         var $s = jQuery('${jsSelector}');
         if ($s.length) {
-          var opts = $s.find('option');
-          opts.each(function() {
-            if (this.textContent.trim().toLowerCase().indexOf('${searchText.toLowerCase()}') >= 0) {
+          var searchLower = '${searchText.toLowerCase()}';
+          var found = false;
+          $s.find('option').each(function() {
+            if (this.textContent.trim().toLowerCase() === searchLower) {
               $s.val(this.value).trigger('change');
+              found = true;
               return false;
             }
           });
+          if (!found) {
+            $s.find('option').each(function() {
+              if (this.textContent.trim().toLowerCase().indexOf(searchLower) === 0) {
+                $s.val(this.value).trigger('change');
+                return false;
+              }
+            });
+          }
           try { $s.select2('close'); } catch(e) {}
         }
       }
@@ -330,9 +445,6 @@
     return true;
   }
 
-  /**
-   * Найти input для города
-   */
   function findCityInput() {
     return document.querySelector('input[name*="city" i]')
       || document.querySelector('input[name*="город" i]')
@@ -342,15 +454,11 @@
       || document.querySelector('input[placeholder*="город" i]');
   }
 
-  /**
-   * Установить значение в input с ожиданием autocomplete
-   */
   async function setInputWithAutocomplete(input, text) {
     input.focus();
     input.click();
     input.value = '';
 
-    // Вводим посимвольно
     for (let i = 0; i < text.length; i++) {
       input.value = text.substring(0, i + 1);
       input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -359,40 +467,44 @@
     }
     input.dispatchEvent(new Event('change', { bubbles: true }));
 
-    // Ждём autocomplete
     await delay(800);
 
-    // Ищем dropdown
     const suggestions = document.querySelectorAll(
       '.ui-autocomplete li a, .ui-autocomplete .ui-menu-item, ' +
       '.autocomplete-suggestion, .tt-suggestion, .dropdown-item, .dropdown-menu li a'
     );
     if (suggestions.length > 0) {
-      let bestMatch = null;
+      // Приоритет: точное → начинается → содержит. НЕ кликаем первый попавшийся.
       for (const s of suggestions) {
-        const st = s.textContent.trim().toLowerCase();
-        if (st === text.toLowerCase() || st.startsWith(text.toLowerCase())) {
-          bestMatch = s;
-          break;
-        }
+        if (s.textContent.trim().toLowerCase() === text.toLowerCase()) { s.click(); return true; }
       }
-      (bestMatch || suggestions[0]).click();
-      return true;
+      for (const s of suggestions) {
+        if (s.textContent.trim().toLowerCase().startsWith(text.toLowerCase())) { s.click(); return true; }
+      }
+      for (const s of suggestions) {
+        if (s.textContent.trim().toLowerCase().includes(text.toLowerCase())) { s.click(); return true; }
+      }
     }
 
-    // Нет suggestions — value уже установлен
     return true;
   }
 
-  /**
-   * Установить опцию в обычном <select> по тексту
-   */
   function setPlainSelectByText(sel, text) {
-    const opt = Array.from(sel.options).find(o =>
-      o.text.trim().toLowerCase().includes(text.toLowerCase())
+    // Точное совпадение сначала
+    const exactOpt = Array.from(sel.options).find(o =>
+      o.text.trim().toLowerCase() === text.toLowerCase()
     );
-    if (opt) {
-      sel.value = opt.value;
+    if (exactOpt) {
+      sel.value = exactOpt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+    // Начинается с
+    const startOpt = Array.from(sel.options).find(o =>
+      o.text.trim().toLowerCase().startsWith(text.toLowerCase())
+    );
+    if (startOpt) {
+      sel.value = startOpt.value;
       sel.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
     }
@@ -400,20 +512,25 @@
   }
 
   // =============================================
-  // Тип номера: "Простой"
+  // Тип номера: очистить + установить "Простой"
   // =============================================
 
-  function setTypeFilter() {
+  async function setTypeFilter() {
     // select2
     const s2 = findSelect2For('type', 'тип', 'kind');
     if (s2) {
+      // Сначала очистим через select2 open → поиск → выбор
+      const selId = s2.select.id;
+      const selName = s2.select.name;
+      const jsSelector = selId ? '#' + selId : 'select[name="' + selName + '"]';
+
       const opt = Array.from(s2.select.options).find(o =>
         o.text.toLowerCase().includes('простой') || o.value.toLowerCase().includes('simple')
       );
       if (opt) {
         runInPage(`
           if (typeof jQuery !== 'undefined' && jQuery.fn.select2) {
-            var $s = jQuery('${s2.select.id ? '#' + s2.select.id : 'select[name="' + s2.select.name + '"]'}');
+            var $s = jQuery('${jsSelector}');
             if ($s.length) { $s.val('${opt.value}').trigger('change'); }
           }
         `);
@@ -445,16 +562,18 @@
   // =============================================
 
   function setCodeFilter(code) {
-    // select2
     const s2 = findSelect2For('code', 'код');
     if (s2) {
+      const selId = s2.select.id;
+      const selName = s2.select.name;
+      const jsSelector = selId ? '#' + selId : 'select[name="' + selName + '"]';
       const opt = Array.from(s2.select.options).find(o =>
         o.text.includes(code) || o.value === code
       );
       if (opt) {
         runInPage(`
           if (typeof jQuery !== 'undefined' && jQuery.fn.select2) {
-            var $s = jQuery('${s2.select.id ? '#' + s2.select.id : 'select[name="' + s2.select.name + '"]'}');
+            var $s = jQuery('${jsSelector}');
             if ($s.length) { $s.val('${opt.value}').trigger('change'); }
           }
         `);
@@ -462,7 +581,6 @@
       }
     }
 
-    // Обычный select
     const codeSelect = document.querySelector('select[name*="code" i]')
       || document.querySelector('select[name*="код" i]');
     if (codeSelect) {
@@ -476,7 +594,6 @@
       }
     }
 
-    // Input
     const codeInput = document.querySelector('input[name*="code" i]')
       || document.querySelector('input[name*="код" i]')
       || document.querySelector('#code')
@@ -494,15 +611,24 @@
   // =============================================
 
   function getSelectedCityText() {
-    // select2 rendered text
+    // select2 теги (множественный выбор)
+    const tags = document.querySelectorAll('.select2-selection__choice');
+    if (tags.length > 0) {
+      return Array.from(tags).map(t => {
+        // Убираем текст кнопки × из тега
+        const clone = t.cloneNode(true);
+        const removeBtn = clone.querySelector('.select2-selection__choice__remove');
+        if (removeBtn) removeBtn.remove();
+        return clone.textContent.trim();
+      }).join(', ');
+    }
+    // select2 rendered text (одиночный выбор)
     const rendered = document.querySelector('.select2-selection__rendered');
     if (rendered && rendered.textContent.trim() && rendered.textContent.trim() !== '—') {
       return rendered.textContent.trim();
     }
-    // Обычный input
     const input = findCityInput();
     if (input) return input.value;
-    // Select
     const sel = document.querySelector('select[name*="city" i]') || document.querySelector('select#city');
     if (sel && sel.selectedIndex > 0) return sel.options[sel.selectedIndex].text;
     return '';
@@ -551,9 +677,6 @@
     return numbers;
   }
 
-  /**
-   * Получить информацию о пагинации
-   */
   function getPaginationInfo() {
     const paginationLinks = document.querySelectorAll('.pagination a, .pagination li, .pager a');
     const pages = [];
@@ -589,9 +712,6 @@
     return null;
   }
 
-  /**
-   * Запуск кода в контексте страницы (для доступа к jQuery/select2)
-   */
   function runInPage(code) {
     const script = document.createElement('script');
     script.textContent = `(function(){${code}})();`;

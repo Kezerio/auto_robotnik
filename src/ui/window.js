@@ -1002,10 +1002,14 @@ function showRunexisWizard() {
   $('#rx-codeGroup').classList.add('hidden');
   rxRunning = false;
 
-  // Показать/скрыть поле "Код" при вводе "Москва"
+  // Показать/скрыть поле "Код" СТРОГО только при вводе "Москва"
   $('#rx-city').oninput = () => {
     const isMoscow = $('#rx-city').value.trim().toLowerCase() === 'москва';
     $('#rx-codeGroup').classList.toggle('hidden', !isMoscow);
+    // Сбрасываем код при уходе от Москвы, чтобы не осталось от прошлого запуска
+    if (!isMoscow) {
+      $('#rx-code').value = '495';
+    }
   };
 
   $('#btn-rxStart').onclick = () => runRunexisWizard();
@@ -1096,6 +1100,7 @@ async function runRunexisWizard() {
 
   const numberType = $('#rx-numberType').value;
   const isMoscow = city.toLowerCase() === 'москва';
+  // Код — СТРОГО только для Москвы. Для всех остальных городов code = null.
   const codeChoice = isMoscow ? $('#rx-code').value : null;
 
   rxRunning = true;
@@ -1103,7 +1108,7 @@ async function runRunexisWizard() {
   $('#rxResult').classList.add('hidden');
   $('#btn-rxStart').disabled = true;
 
-  addLog('Runexis', `Запуск: ${city}, ${numberType}${isMoscow ? ', код: ' + codeChoice : ''}`, true);
+  addLog('Runexis', `Запуск: ${city}, ${numberType}${isMoscow ? ', код: ' + codeChoice : ', без кода'}`, true);
 
   try {
     // === ШАГ 1: Открыть / найти вкладку Runexis ===
@@ -1164,8 +1169,10 @@ async function runRunexisWizard() {
     await sendMsg({ type: 'RUNEXIS_WAIT_TAB_LOAD', tabId: rxTabId, timeout: 10000 });
     rxUpdateStep(step, 'done');
 
-    // Определяем проходы
-    const codes = isMoscow && codeChoice === 'both' ? ['495', '499'] : [codeChoice];
+    // Определяем проходы: для Москвы — по кодам, для остальных — один проход без кода
+    const codes = isMoscow
+      ? (codeChoice === 'both' ? ['495', '499'] : [codeChoice])
+      : [null]; // null = без кода
     let allNumbers = [];
 
     for (const code of codes) {
@@ -1183,14 +1190,19 @@ async function runRunexisWizard() {
       } else {
         const d = filterResp.diagnostics || {};
         const details = [];
-        if (d.cityValue) details.push(`город: ${d.cityValue}`);
-        else if (d.citySet) details.push(`город: ${city} (установлен)`);
+        if (d.cityValue) {
+          details.push(`город: ${d.cityValue}`);
+          if (!d.cityVerified) details.push('(НЕ СОВПАДАЕТ!)');
+        } else if (d.citySet) {
+          details.push(`город: ${city} (установлен)`);
+        }
         if (d.typeValue) details.push(`тип: ${d.typeValue}`);
-        if (d.codeValue) details.push(`код: ${d.codeValue}`);
-        rxUpdateStep(step, 'done', details.join(', ') || 'OK');
+        if (code && d.codeValue) details.push(`код: ${d.codeValue}`);
+        if (!code) details.push('без кода');
+        rxUpdateStep(step, d.cityVerified === false && d.cityValue ? 'error' : 'done', details.join(', ') || 'OK');
       }
 
-      // === ШАГ 5: Применить ===
+      // === ШАГ 5: Применить + ожидание результатов (до 30с) ===
       step = rxAddStep(`Шаг 5: Применяю${passLabel}...`, 'running');
       rxSetStatus(`Нажимаю "Применить"${passLabel}...`);
       await delay(700);
@@ -1198,12 +1210,16 @@ async function runRunexisWizard() {
       if (!applyResp?.ok) {
         rxUpdateStep(step, 'error', `Кнопка: ${applyResp?.error || 'не найдена'}`);
       } else {
-        rxUpdateStep(step, 'done');
+        rxSetStatus(`Жду результаты${passLabel} (до 30 сек)...`);
+        const waitResp = await sendToRunexisTab({ type: 'RUNEXIS_WAIT_FOR_RESULTS', timeout: 30000 });
+        if (!waitResp?.ok) {
+          rxUpdateStep(step, 'error', waitResp?.error || 'Не дождался результатов за 30 секунд');
+        } else if (waitResp.notFound) {
+          rxUpdateStep(step, 'done', 'результаты: ничего не найдено');
+        } else {
+          rxUpdateStep(step, 'done', 'результаты загружены');
+        }
       }
-
-      // Ждём результаты
-      await sendMsg({ type: 'RUNEXIS_WAIT_TAB_LOAD', tabId: rxTabId, timeout: 10000 });
-      await delay(1000);
 
       // === ШАГ 6: Пагинация ===
       step = rxAddStep(`Шаг 6: Пагинация${passLabel}...`, 'running');
