@@ -1010,18 +1010,44 @@ function showRunexisWizard() {
 
   $('#btn-rxStart').onclick = () => runRunexisWizard();
   $('#btn-rxCancel').onclick = () => cancelRunexisWizard();
-  $('#btn-rxCopy').onclick = () => {
+  $('#btn-rxCopy').onclick = async () => {
     const text = $('#rxResultText').value;
-    if (text) {
-      navigator.clipboard.writeText(text);
+    if (!text) return;
+    // Копируем через content script активной вкладки Runexis
+    const resp = await sendToRunexisTab({ type: 'RUNEXIS_COPY_TO_CLIPBOARD', text });
+    if (resp?.ok) {
       showToast('Номера скопированы в буфер');
+    } else {
+      // Fallback: прямая попытка (может не сработать из popup)
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast('Номера скопированы в буфер');
+      } catch (e) {
+        showToast('Не удалось скопировать — выделите текст в поле ниже и нажмите Ctrl+C');
+        $('#rxResultText').select();
+        $('#rxResultText').focus();
+      }
     }
+  };
+  $('#btn-rxShowResult').onclick = () => {
+    // Показать результат для ручного Ctrl+C
+    const text = $('#rxResultText').value;
+    if (!text) { showToast('Нет результата'); return; }
+    $('#rxResult').classList.remove('hidden');
+    $('#rxResultText').select();
+    $('#rxResultText').focus();
+    showToast('Выделите текст и нажмите Ctrl+C для копирования');
   };
   $('#btn-rxInsertOtrs').onclick = () => insertRunexisToOtrs();
   $('#btn-rxReInsert').onclick = () => insertRunexisToOtrs();
-  $('#btn-rxClearClipboard').onclick = () => {
-    navigator.clipboard.writeText('');
-    showToast('Буфер обмена очищен');
+  $('#btn-rxClearClipboard').onclick = async () => {
+    const resp = await sendToRunexisTab({ type: 'RUNEXIS_COPY_TO_CLIPBOARD', text: '' });
+    if (resp?.ok) {
+      showToast('Буфер обмена очищен');
+    } else {
+      try { await navigator.clipboard.writeText(''); showToast('Буфер обмена очищен'); }
+      catch (e) { showToast('Не удалось очистить буфер'); }
+    }
   };
   $('#btn-rxClearResult').onclick = async () => {
     await sendMsg({ type: 'RUNEXIS_CLEAR_RESULT' });
@@ -1147,15 +1173,21 @@ async function runRunexisWizard() {
 
       const passLabel = codes.length > 1 ? ` (код ${code})` : '';
 
-      // === ШАГ 4: Фильтры ===
+      // === ШАГ 4: Фильтры (очистка + установка) ===
       step = rxAddStep(`Шаг 4: Фильтры${passLabel}...`, 'running');
-      rxSetStatus(`Заполняю фильтры${passLabel}...`);
+      rxSetStatus(`Очищаю + заполняю фильтры${passLabel}...`);
       await delay(500);
       const filterResp = await sendToRunexisTab({ type: 'RUNEXIS_SET_FILTERS', city, numberType, code });
       if (!filterResp?.ok) {
         rxUpdateStep(step, 'error', `Ошибка фильтров: ${filterResp?.error || 'content script не ответил'}`);
       } else {
-        rxUpdateStep(step, 'done');
+        const d = filterResp.diagnostics || {};
+        const details = [];
+        if (d.cityValue) details.push(`город: ${d.cityValue}`);
+        else if (d.citySet) details.push(`город: ${city} (установлен)`);
+        if (d.typeValue) details.push(`тип: ${d.typeValue}`);
+        if (d.codeValue) details.push(`код: ${d.codeValue}`);
+        rxUpdateStep(step, 'done', details.join(', ') || 'OK');
       }
 
       // === ШАГ 5: Применить ===
@@ -1179,8 +1211,7 @@ async function runRunexisWizard() {
       const pagInfo = await sendToRunexisTab({ type: 'RUNEXIS_GET_PAGINATION_INFO' });
       let targetPage = 1;
       if (pagInfo?.ok) {
-        if (pagInfo.maxPage >= 3) targetPage = 3;
-        else if (pagInfo.maxPage >= 2) targetPage = 2;
+        if (pagInfo.maxPage >= 2) targetPage = 2;
       }
 
       if (targetPage > 1) {
@@ -1193,7 +1224,7 @@ async function runRunexisWizard() {
           await delay(800);
         }
       }
-      rxUpdateStep(step, 'done', `стр. ${targetPage}`);
+      rxUpdateStep(step, 'done', `стр. ${targetPage} из ${pagInfo?.maxPage || '?'}`);
 
       // === ШАГ 7: Сбор номеров ===
       step = rxAddStep(`Шаг 7: Сбор номеров${passLabel}...`, 'running');
@@ -1202,7 +1233,7 @@ async function runRunexisWizard() {
       if (!collectResp?.ok) {
         rxUpdateStep(step, 'error', `Ошибка сбора: ${collectResp?.error || 'content script не ответил'}`);
       } else if (collectResp.numbers?.length > 0) {
-        rxUpdateStep(step, 'done', `${collectResp.numbers.length} номеров`);
+        rxUpdateStep(step, 'done', `${collectResp.numbers.length} номеров на стр. ${targetPage}`);
         allNumbers = allNumbers.concat(collectResp.numbers);
       } else {
         rxUpdateStep(step, 'error', 'Номера не найдены на странице');
@@ -1218,21 +1249,26 @@ async function runRunexisWizard() {
       return;
     }
 
-    // Сохраняем и копируем
+    // Сохраняем и копируем (через content script — обход ошибки "Document is not focused")
     const resultText = allNumbers.join('\n');
     await sendMsg({ type: 'RUNEXIS_STORE_RESULT', numbers: allNumbers });
-    await navigator.clipboard.writeText(resultText);
+    const copyResp = await sendToRunexisTab({ type: 'RUNEXIS_COPY_TO_CLIPBOARD', text: resultText });
+    const copied = copyResp?.ok;
 
     // Показываем результат
     $('#rxResult').classList.remove('hidden');
-    $('#rxResultInfo').textContent = `Готово: ${allNumbers.length} номеров, скопировано`;
+    $('#rxResultInfo').textContent = copied
+      ? `Готово: ${allNumbers.length} номеров, скопировано в буфер`
+      : `Готово: ${allNumbers.length} номеров (буфер: не удалось — используйте "Показать результат" для ручного копирования)`;
     $('#rxResultText').value = resultText;
 
     // Проверяем OTRS editor
     await checkOtrsEditorAvailable();
 
     rxSetStatus(`Готово: ${allNumbers.length} номеров`);
-    showToast(`Готово: ${allNumbers.length} номеров, скопировано в буфер`);
+    showToast(copied
+      ? `Готово: ${allNumbers.length} номеров, скопировано в буфер`
+      : `Готово: ${allNumbers.length} номеров (буфер обмена недоступен — нажмите "Показать результат")`);
     addLog('Runexis', `Подобрано ${allNumbers.length} номеров для ${city}`, true);
 
   } catch (err) {
@@ -1267,8 +1303,12 @@ async function insertRunexisToOtrs() {
     addLog('Runexis', 'Номера вставлены в OTRS', true);
   } else {
     showToast(`Ошибка вставки: ${resp?.error || 'OTRS вкладка не найдена'}`);
-    navigator.clipboard.writeText(text);
-    showToast('Скопировано в буфер (OTRS не найден)');
+    const copyFb = await sendToRunexisTab({ type: 'RUNEXIS_COPY_TO_CLIPBOARD', text });
+    if (copyFb?.ok) {
+      showToast('Скопировано в буфер (OTRS не найден)');
+    } else {
+      showToast('OTRS не найден. Используйте "Показать результат" для ручного копирования.');
+    }
   }
 }
 
