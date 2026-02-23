@@ -1221,35 +1221,14 @@ async function runRunexisWizard() {
         }
       }
 
-      // === ШАГ 6: Пагинация ===
-      step = rxAddStep(`Шаг 6: Пагинация${passLabel}...`, 'running');
-      rxSetStatus(`Определяю пагинацию${passLabel}...`);
-      const pagInfo = await sendToRunexisTab({ type: 'RUNEXIS_GET_PAGINATION_INFO' });
-      let targetPage = 1;
-      if (pagInfo?.ok) {
-        if (pagInfo.maxPage >= 2) targetPage = 2;
-      }
-
-      if (targetPage > 1) {
-        const goResp = await sendToRunexisTab({ type: 'RUNEXIS_GO_TO_PAGE', page: targetPage });
-        if (!goResp?.ok) {
-          rxUpdateStep(step, 'error', `Страница ${targetPage}: ${goResp?.error || 'не найдена'}`);
-          targetPage = 1; // остаёмся на текущей
-        } else {
-          await sendMsg({ type: 'RUNEXIS_WAIT_TAB_LOAD', tabId: rxTabId, timeout: 8000 });
-          await delay(800);
-        }
-      }
-      rxUpdateStep(step, 'done', `стр. ${targetPage} из ${pagInfo?.maxPage || '?'}`);
-
-      // === ШАГ 7: Сбор номеров ===
-      step = rxAddStep(`Шаг 7: Сбор номеров${passLabel}...`, 'running');
+      // === ШАГ 6: Сбор номеров (всегда с текущей страницы, без переключения) ===
+      step = rxAddStep(`Шаг 6: Сбор номеров${passLabel}...`, 'running');
       rxSetStatus(`Собираю номера${passLabel}...`);
       const collectResp = await sendToRunexisTab({ type: 'RUNEXIS_COLLECT_NUMBERS' });
       if (!collectResp?.ok) {
         rxUpdateStep(step, 'error', `Ошибка сбора: ${collectResp?.error || 'content script не ответил'}`);
       } else if (collectResp.numbers?.length > 0) {
-        rxUpdateStep(step, 'done', `${collectResp.numbers.length} номеров на стр. ${targetPage}`);
+        rxUpdateStep(step, 'done', `${collectResp.numbers.length} номеров`);
         allNumbers = allNumbers.concat(collectResp.numbers);
       } else {
         rxUpdateStep(step, 'error', 'Номера не найдены на странице');
